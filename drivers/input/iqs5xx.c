@@ -18,13 +18,53 @@
 
 LOG_MODULE_REGISTER(iqs5xx, CONFIG_INPUT_LOG_LEVEL);
 
-static int iqs5xx_read_reg16(const struct device *dev, uint16_t reg, uint16_t *val) {
+/*
+ * Number of I2C retry attempts and inter-attempt backoff.
+ * Mirrors the Linux kernel iqs5xx driver's pattern (drivers/input/touchscreen/iqs5xx.c
+ * IQS5XX_NUM_RETRIES = 10). Reason from the Linux comment: the IQS5xx chip's
+ * comm-window protocol means the first I2C transaction outside an open window
+ * can fail; the chip then clock-stretches/recovers and accepts the next attempt.
+ * Without retry, isolated NACKs cause silent config failures (e.g. flip-x not
+ * landing) on fast power cycles where the comm window timing is unfavorable.
+ */
+#define IQS5XX_I2C_RETRIES 10
+#define IQS5XX_I2C_RETRY_BACKOFF_US 250
+
+static int iqs5xx_i2c_write_with_retry(const struct device *dev,
+                                       const uint8_t *buf, size_t len) {
     const struct iqs5xx_config *config = dev->config;
+    int ret;
+    for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
+        ret = i2c_write_dt(&config->i2c, buf, len);
+        if (ret == 0) {
+            return 0;
+        }
+        k_usleep(IQS5XX_I2C_RETRY_BACKOFF_US);
+    }
+    return ret;
+}
+
+static int iqs5xx_i2c_write_read_with_retry(const struct device *dev,
+                                            const uint8_t *tx_buf, size_t tx_len,
+                                            uint8_t *rx_buf, size_t rx_len) {
+    const struct iqs5xx_config *config = dev->config;
+    int ret;
+    for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
+        ret = i2c_write_read_dt(&config->i2c, tx_buf, tx_len, rx_buf, rx_len);
+        if (ret == 0) {
+            return 0;
+        }
+        k_usleep(IQS5XX_I2C_RETRY_BACKOFF_US);
+    }
+    return ret;
+}
+
+static int iqs5xx_read_reg16(const struct device *dev, uint16_t reg, uint16_t *val) {
     uint8_t buf[2];
     uint8_t reg_buf[2] = {reg >> 8, reg & 0xFF};
     int ret;
 
-    ret = i2c_write_read_dt(&config->i2c, reg_buf, sizeof(reg_buf), buf, sizeof(buf));
+    ret = iqs5xx_i2c_write_read_with_retry(dev, reg_buf, sizeof(reg_buf), buf, sizeof(buf));
     if (ret < 0) {
         return ret;
     }
@@ -34,27 +74,26 @@ static int iqs5xx_read_reg16(const struct device *dev, uint16_t reg, uint16_t *v
 }
 
 static int iqs5xx_write_reg16(const struct device *dev, uint16_t reg, uint16_t val) {
-    const struct iqs5xx_config *config = dev->config;
     uint8_t buf[4] = {reg >> 8, reg & 0xFF, val >> 8, val & 0xFF};
 
-    return i2c_write_dt(&config->i2c, buf, sizeof(buf));
+    return iqs5xx_i2c_write_with_retry(dev, buf, sizeof(buf));
 }
 
 static int iqs5xx_read_reg8(const struct device *dev, uint16_t reg, uint8_t *val) {
-    const struct iqs5xx_config *config = dev->config;
     uint8_t reg_buf[2] = {reg >> 8, reg & 0xFF};
 
-    return i2c_write_read_dt(&config->i2c, reg_buf, sizeof(reg_buf), val, 1);
+    return iqs5xx_i2c_write_read_with_retry(dev, reg_buf, sizeof(reg_buf), val, 1);
 }
 
 static int iqs5xx_write_reg8(const struct device *dev, uint16_t reg, uint8_t val) {
-    const struct iqs5xx_config *config = dev->config;
     uint8_t buf[3] = {reg >> 8, reg & 0xFF, val};
 
-    return i2c_write_dt(&config->i2c, buf, sizeof(buf));
+    return iqs5xx_i2c_write_with_retry(dev, buf, sizeof(buf));
 }
 
 static int iqs5xx_end_comm_window(const struct device *dev) {
+    /* End-comm window deliberately NACKs by chip-protocol design — don't
+     * retry, just send once. Driver callers ignore the return value. */
     const struct iqs5xx_config *config = dev->config;
     uint8_t buf[3] = {IQS5XX_END_COMM_WINDOW >> 8, IQS5XX_END_COMM_WINDOW & 0xFF, 0x00};
 
@@ -375,10 +414,19 @@ static int iqs5xx_init(const struct device *dev) {
         }
 
         // Reset the device.
+        // Hold NRST asserted for 10ms (datasheet specifies >=150us; 10ms is
+        // generous and matches stelmakhdigital's TPS43 driver).
+        // Then release and wait 250ms for the chip's internal ATI calibration
+        // to complete. The IQS572 datasheet specifies ATI takes ~150ms in
+        // worst case; the previous 10ms wait was below this and caused
+        // setup_device writes to fire during the chip's ATI window where
+        // they could be NACKed silently. With the I2C retry helpers above,
+        // shorter waits would also work, but a generous wait avoids
+        // burning retry attempts during the deterministic ATI period.
         gpio_pin_set_dt(&config->reset_gpio, 1);
-        k_msleep(1);
-        gpio_pin_set_dt(&config->reset_gpio, 0);
         k_msleep(10);
+        gpio_pin_set_dt(&config->reset_gpio, 0);
+        k_msleep(250);
     }
 
     // Configure RDY GPIO.
