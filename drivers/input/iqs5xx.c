@@ -237,6 +237,28 @@ static int iqs5xx_setup_device(const struct device *dev) {
     const struct iqs5xx_config *config = dev->config;
     int ret;
 
+    // Clear SETUP_COMPLETE before any other config writes.
+    //
+    // The IQS5xx series treats register writes as advisory once SETUP_COMPLETE
+    // is set: the chip continues using whatever configuration was active when
+    // the bit was set, ignoring subsequent writes. On a fast power-cycle (e.g.
+    // brief USB unplug/replug, MCU reset without full chip POR) the chip can
+    // wake with SETUP_COMPLETE retained from the previous session. Without
+    // clearing it first, any config writes done here — including XY_CONFIG_0
+    // (flip-x/flip-y/switch-xy) — silently no-op on the chip. Result: cursor
+    // axes can come up wrong despite firmware being correct, and only a long
+    // (10s+) full power cycle restores expected behavior.
+    //
+    // Writing 0 to SYSTEM_CONFIG_0 first guarantees the chip is in
+    // configuration mode regardless of prior state. ~10ms settle gives the
+    // chip time to acknowledge the mode change before subsequent writes.
+    ret = iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONFIG_0, 0);
+    if (ret < 0) {
+        LOG_ERR("Failed to clear SETUP_COMPLETE: %d", ret);
+        return ret;
+    }
+    k_msleep(10);
+
     // Enable event mode and trackpad events.
     ret = iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONFIG_1,
                             IQS5XX_EVENT_MODE | IQS5XX_TP_EVENT | IQS5XX_GESTURE_EVENT);
