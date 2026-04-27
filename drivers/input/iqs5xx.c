@@ -141,10 +141,25 @@ static void iqs5xx_work_handler(struct k_work *work) {
     uint8_t sys_info_0, sys_info_1, gesture_events_0, gesture_events_1, num_fingers;
     int ret;
 
-    // Read system info registers.
+    // Read SYS_INFO_0 first and check SHOW_RESET BEFORE doing any other
+    // reads. If chip is signaling a reset (after NRST, brown-out, etc.),
+    // we must ACK it via writing ACK_RESET to SYSTEM_CONTROL_0 — otherwise
+    // chip continues firing RDY interrupts indefinitely, saturating the
+    // work queue and starving BLE split forwarding (whole keyboard appears
+    // to lock up). Original AYM1607 driver had this check positioned
+    // AFTER reading 4 registers; if any of those subsequent reads NACK'd
+    // (likely during chip transient state), the goto end_comm path
+    // skipped the ACK_RESET write entirely. Moving the check up makes
+    // the ack the FIRST thing we do once we know SYS_INFO_0 is readable.
     ret = iqs5xx_read_reg8(dev, IQS5XX_SYSTEM_INFO_0, &sys_info_0);
     if (ret < 0) {
         LOG_ERR("Failed to read system info 0: %d", ret);
+        goto end_comm;
+    }
+
+    if (sys_info_0 & IQS5XX_SHOW_RESET) {
+        LOG_INF("Device reset detected, sending ACK_RESET");
+        iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONTROL_0, IQS5XX_ACK_RESET);
         goto end_comm;
     }
 
@@ -163,14 +178,6 @@ static void iqs5xx_work_handler(struct k_work *work) {
     ret = iqs5xx_read_reg8(dev, IQS5XX_GESTURE_EVENTS_1, &gesture_events_1);
     if (ret < 0) {
         LOG_ERR("Failed to read gesture events 1: %d", ret);
-        goto end_comm;
-    }
-
-    // Handle reset indication.
-    if (sys_info_0 & IQS5XX_SHOW_RESET) {
-        LOG_INF("Device reset detected");
-        // Acknowledge reset.
-        iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONTROL_0, IQS5XX_ACK_RESET);
         goto end_comm;
     }
 
@@ -292,6 +299,27 @@ static void iqs5xx_rdy_handler(const struct device *port, struct gpio_callback *
 static int iqs5xx_setup_device(const struct device *dev) {
     const struct iqs5xx_config *config = dev->config;
     int ret;
+
+    // ACK any pending reset signal first.
+    //
+    // After the NRST drive in iqs5xx_init (or any chip-side reset event),
+    // the chip raises SHOW_RESET (bit 7 of SYS_INFO_0) and continues
+    // firing RDY interrupts until the host acknowledges the reset by
+    // writing ACK_RESET (bit 7 of SYSTEM_CONTROL_0 / register 0x0431).
+    // Without this ack, the chip floods RDY events at high rate, the
+    // work queue saturates, and BLE split forwarding starves — whole
+    // keyboard appears to lock up. stelmakhdigital's TPS43 driver does
+    // this handshake; AYM1607 had the ack write only inside the work
+    // handler AFTER several register reads, so any read NACK skipped
+    // it. We do it unconditionally first thing here. If chip wasn't
+    // actually reset, the write is harmless (datasheet says ACK_RESET
+    // bit is self-clearing).
+    ret = iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONTROL_0, IQS5XX_ACK_RESET);
+    if (ret < 0) {
+        LOG_ERR("Failed to ACK_RESET at setup: %d", ret);
+        return ret;
+    }
+    k_msleep(10);
 
     // Clear SETUP_COMPLETE before any other config writes.
     //
