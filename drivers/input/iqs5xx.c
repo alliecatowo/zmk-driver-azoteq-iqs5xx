@@ -59,12 +59,22 @@ static int iqs5xx_i2c_write_read_with_retry(const struct device *dev,
     return ret;
 }
 
+/*
+ * Reads do NOT use retry. Runtime work-handler reads are expected to
+ * occasionally NACK at end-of-comm-window — the driver handles this by
+ * jumping to end_comm and waiting for the next RDY interrupt. Retrying
+ * here would burn ~2.5ms per failed read, saturating the work queue
+ * during chip transient states (e.g. post-fast-power-cycle ATI) and
+ * causing the cursor to stop responding entirely. Single-shot reads
+ * preserve the driver's intended fail-fast behavior.
+ */
 static int iqs5xx_read_reg16(const struct device *dev, uint16_t reg, uint16_t *val) {
+    const struct iqs5xx_config *config = dev->config;
     uint8_t buf[2];
     uint8_t reg_buf[2] = {reg >> 8, reg & 0xFF};
     int ret;
 
-    ret = iqs5xx_i2c_write_read_with_retry(dev, reg_buf, sizeof(reg_buf), buf, sizeof(buf));
+    ret = i2c_write_read_dt(&config->i2c, reg_buf, sizeof(reg_buf), buf, sizeof(buf));
     if (ret < 0) {
         return ret;
     }
@@ -73,16 +83,23 @@ static int iqs5xx_read_reg16(const struct device *dev, uint16_t reg, uint16_t *v
     return 0;
 }
 
+static int iqs5xx_read_reg8(const struct device *dev, uint16_t reg, uint8_t *val) {
+    const struct iqs5xx_config *config = dev->config;
+    uint8_t reg_buf[2] = {reg >> 8, reg & 0xFF};
+
+    return i2c_write_read_dt(&config->i2c, reg_buf, sizeof(reg_buf), val, 1);
+}
+
+/*
+ * Writes DO use retry. Setup_device writes happen once at init and the
+ * comm-window-timing-NACK they may hit benefits from a few retries to
+ * survive a transient closed window. The wasted time on failure is
+ * absorbed in the one-time init path, not the runtime hot loop.
+ */
 static int iqs5xx_write_reg16(const struct device *dev, uint16_t reg, uint16_t val) {
     uint8_t buf[4] = {reg >> 8, reg & 0xFF, val >> 8, val & 0xFF};
 
     return iqs5xx_i2c_write_with_retry(dev, buf, sizeof(buf));
-}
-
-static int iqs5xx_read_reg8(const struct device *dev, uint16_t reg, uint8_t *val) {
-    uint8_t reg_buf[2] = {reg >> 8, reg & 0xFF};
-
-    return iqs5xx_i2c_write_read_with_retry(dev, reg_buf, sizeof(reg_buf), val, 1);
 }
 
 static int iqs5xx_write_reg8(const struct device *dev, uint16_t reg, uint8_t val) {
