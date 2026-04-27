@@ -91,6 +91,24 @@ static int iqs5xx_read_reg8(const struct device *dev, uint16_t reg, uint8_t *val
 }
 
 /*
+ * Burst read N bytes starting at `reg`. The IQS5xx auto-increments the
+ * register address within a comm window, so a single i2c_write_read_dt
+ * pulls a contiguous block. Used in the work handler to read all per-event
+ * status + relative-coordinate registers in one transaction instead of 6
+ * separate reads — cuts I2C-on-the-wire time substantially and, more
+ * importantly, eliminates per-transaction START/RESTART overhead. Less
+ * time spent in the work handler = fewer coalesced/missed RDY events =
+ * smoother tracking. Single-shot, no retry — same fail-fast philosophy
+ * as the per-register reads.
+ */
+static int iqs5xx_read_burst(const struct device *dev, uint16_t reg, uint8_t *buf, size_t len) {
+    const struct iqs5xx_config *config = dev->config;
+    uint8_t reg_buf[2] = {reg >> 8, reg & 0xFF};
+
+    return i2c_write_read_dt(&config->i2c, reg_buf, sizeof(reg_buf), buf, len);
+}
+
+/*
  * Writes DO use retry. Setup_device writes happen once at init and the
  * comm-window-timing-NACK they may hit benefits from a few retries to
  * survive a transient closed window. The wasted time on failure is
@@ -138,24 +156,47 @@ static void iqs5xx_work_handler(struct k_work *work) {
     struct iqs5xx_data *data = CONTAINER_OF(work, struct iqs5xx_data, work);
     const struct device *dev = data->dev;
     const struct iqs5xx_config *config = dev->config;
-    uint8_t sys_info_0, sys_info_1, gesture_events_0, gesture_events_1, num_fingers;
+    uint8_t sys_info_0, sys_info_1, gesture_events_0, gesture_events_1;
+    int16_t rel_x, rel_y;
     int ret;
 
-    // Read SYS_INFO_0 first and check SHOW_RESET BEFORE doing any other
-    // reads. If chip is signaling a reset (after NRST, brown-out, etc.),
-    // we must ACK it via writing ACK_RESET to SYSTEM_CONTROL_0 — otherwise
-    // chip continues firing RDY interrupts indefinitely, saturating the
-    // work queue and starving BLE split forwarding (whole keyboard appears
-    // to lock up). Original AYM1607 driver had this check positioned
-    // AFTER reading 4 registers; if any of those subsequent reads NACK'd
-    // (likely during chip transient state), the goto end_comm path
-    // skipped the ACK_RESET write entirely. Moving the check up makes
-    // the ack the FIRST thing we do once we know SYS_INFO_0 is readable.
-    ret = iqs5xx_read_reg8(dev, IQS5XX_SYSTEM_INFO_0, &sys_info_0);
+    /*
+     * Single burst read of all per-event status + relative-coordinate
+     * registers (0x000D..0x0015, 9 bytes). Chip auto-increments the
+     * register pointer within a comm window. Order on the wire:
+     *
+     *   buf[0] 0x000D GESTURE_EVENTS_0
+     *   buf[1] 0x000E GESTURE_EVENTS_1
+     *   buf[2] 0x000F SYSTEM_INFO_0
+     *   buf[3] 0x0010 SYSTEM_INFO_1
+     *   buf[4] 0x0011 NUM_FINGERS
+     *   buf[5] 0x0012 REL_X high byte
+     *   buf[6] 0x0013 REL_X low byte
+     *   buf[7] 0x0014 REL_Y high byte
+     *   buf[8] 0x0015 REL_Y low byte
+     *
+     * Replaces 6 separate i2c_write_read_dt calls. Saves ~5 START/RESTART
+     * overheads per RDY cycle and shortens time-in-work-handler — the
+     * direct cause of coalesced/missed RDY events that show up as jittery
+     * tracking and "straight line" gaps where multiple samples were lost.
+     *
+     * SHOW_RESET is checked AFTER the burst so we still get a clean ack
+     * path on chip-reset signaling — buf contents are nonsense in that
+     * state but we just discard them and ack.
+     */
+    uint8_t buf[9];
+    ret = iqs5xx_read_burst(dev, IQS5XX_GESTURE_EVENTS_0, buf, sizeof(buf));
     if (ret < 0) {
-        LOG_ERR("Failed to read system info 0: %d", ret);
+        LOG_ERR("Failed burst read of event registers: %d", ret);
         goto end_comm;
     }
+    gesture_events_0 = buf[0];
+    gesture_events_1 = buf[1];
+    sys_info_0 = buf[2];
+    sys_info_1 = buf[3];
+    /* buf[4] = NUM_FINGERS — read but not currently consumed. */
+    rel_x = (int16_t)((buf[5] << 8) | buf[6]);
+    rel_y = (int16_t)((buf[7] << 8) | buf[8]);
 
     if (sys_info_0 & IQS5XX_SHOW_RESET) {
         LOG_INF("Device reset detected, sending ACK_RESET");
@@ -163,22 +204,15 @@ static void iqs5xx_work_handler(struct k_work *work) {
         goto end_comm;
     }
 
-    ret = iqs5xx_read_reg8(dev, IQS5XX_SYSTEM_INFO_1, &sys_info_1);
-    if (ret < 0) {
-        LOG_ERR("Failed to read system info 1: %d", ret);
-        goto end_comm;
-    }
-
-    ret = iqs5xx_read_reg8(dev, IQS5XX_GESTURE_EVENTS_0, &gesture_events_0);
-    if (ret < 0) {
-        LOG_ERR("Failed to read gesture events: %d", ret);
-        goto end_comm;
-    }
-
-    ret = iqs5xx_read_reg8(dev, IQS5XX_GESTURE_EVENTS_1, &gesture_events_1);
-    if (ret < 0) {
-        LOG_ERR("Failed to read gesture events 1: %d", ret);
-        goto end_comm;
+    /*
+     * RR_MISSED is the chip's own "I had a sample ready but the host
+     * didn't read in time" indicator. Log when it fires so we can see if
+     * tracking jank correlates with chip-side drops vs MCU-side stalls.
+     * Should be rare in steady state; non-rare = report rate too high
+     * for the I2C+work-queue path or BLE backpressure.
+     */
+    if (sys_info_1 & IQS5XX_RR_MISSED) {
+        LOG_WRN("Chip reports RR_MISSED — sample dropped");
     }
 
     bool tp_movement = (sys_info_1 & IQS5XX_TP_MOVEMENT) != 0;
@@ -202,20 +236,7 @@ static void iqs5xx_work_handler(struct k_work *work) {
     bool hold_became_active = (gesture_events_0 & IQS5XX_PRESS_AND_HOLD) && !data->active_hold;
     bool hold_released = !(gesture_events_0 & IQS5XX_PRESS_AND_HOLD) && data->active_hold;
 
-    int16_t rel_x, rel_y;
-    if (tp_movement || scroll) {
-        ret = iqs5xx_read_reg16(dev, IQS5XX_REL_X, (uint16_t *)&rel_x);
-        if (ret < 0) {
-            LOG_ERR("Failed to read relative X: %d", ret);
-            goto end_comm;
-        }
-
-        ret = iqs5xx_read_reg16(dev, IQS5XX_REL_Y, (uint16_t *)&rel_y);
-        if (ret < 0) {
-            LOG_ERR("Failed to read relative Y: %d", ret);
-            goto end_comm;
-        }
-    }
+    /* rel_x/rel_y already pulled in the burst read above. */
 
     // Handle movement and gestures.
     //
@@ -272,12 +293,6 @@ static void iqs5xx_work_handler(struct k_work *work) {
             goto end_comm;
         }
     } else if (tp_movement) {
-        ret = iqs5xx_read_reg8(dev, IQS5XX_NUM_FINGERS, &num_fingers);
-        if (ret < 0) {
-            LOG_ERR("Failed to read number of fingers: %d", ret);
-            goto end_comm;
-        }
-
         if (rel_x != 0 || rel_y != 0) {
             input_report_rel(dev, INPUT_REL_X, rel_x, false, K_FOREVER);
             input_report_rel(dev, INPUT_REL_Y, rel_y, true, K_FOREVER);
