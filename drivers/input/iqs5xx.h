@@ -11,6 +11,10 @@
 #define IQS5XX_BOTTOM_BETA 0x0637
 #define IQS5XX_STATIONARY_THRESH 0x0672
 
+/* Active mode report rate (uint16, ms). Chip default 10 = 100Hz. Lowering
+ * to 5-7 ms gives 140-200Hz for smoother tracking under fast motion. */
+#define IQS5XX_REPORT_RATE_ACTIVE 0x057A
+
 #define IQS5XX_END_COMM_WINDOW 0xEEEE
 
 #define IQS5XX_SYSTEM_CONTROL_0 0x0431
@@ -135,6 +139,9 @@ struct iqs5xx_config {
     // Sensitivity. configuration.
     uint8_t bottom_beta;
     uint8_t stationary_threshold;
+
+    // Active-mode report rate in ms; 0 = leave chip at default.
+    uint16_t report_rate_active_ms;
 };
 
 struct iqs5xx_data {

@@ -378,6 +378,15 @@ static int iqs5xx_setup_device(const struct device *dev) {
         return ret;
     }
 
+    /* Active-mode report rate. Skipped when 0 to preserve chip default. */
+    if (config->report_rate_active_ms > 0) {
+        ret = iqs5xx_write_reg16(dev, IQS5XX_REPORT_RATE_ACTIVE, config->report_rate_active_ms);
+        if (ret < 0) {
+            LOG_ERR("Failed to set active report rate: %d", ret);
+            return ret;
+        }
+    }
+
     // TODO: Expose these through dts bindings.
     // Set filter settings with:
     // - IIR filter enabled
@@ -549,6 +558,7 @@ static int iqs5xx_init(const struct device *dev) {
         .flip_y = DT_INST_PROP(n, flip_y),                                                         \
         .bottom_beta = DT_INST_PROP_OR(n, bottom_beta, 5),                                         \
         .stationary_threshold = DT_INST_PROP_OR(n, stationary_threshold, 5),                       \
+        .report_rate_active_ms = DT_INST_PROP_OR(n, report_rate_active_ms, 10),                    \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, iqs5xx_init, NULL, &iqs5xx_data_##n, &iqs5xx_config_##n, POST_KERNEL, \
                           CONFIG_INPUT_INIT_PRIORITY, NULL);

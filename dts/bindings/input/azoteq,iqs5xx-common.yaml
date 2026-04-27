@@ -61,3 +61,14 @@ properties:
     description: |
       How far a finger must move (in pixels) to not be considered stationary.
     default: 5
+
+  report-rate-active-ms:
+    type: int
+    description: |
+      Active-mode report rate in milliseconds — written to register 0x057A.
+      Lower = higher polling rate = smaller per-sample deltas = smoother tracking
+      under fast motion (fewer "straight line" gaps between widely-spaced samples).
+      Chip default 10 (100Hz). Set to 0 to skip the register write and leave the
+      chip at whatever it last had. 5ms (200Hz) is the practical floor for the
+      IQS572 — going faster risks the chip not finishing its sense cycle in time.
+    default: 10
