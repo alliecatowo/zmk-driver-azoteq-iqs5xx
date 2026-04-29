@@ -90,6 +90,26 @@ static int iqs5xx_read_reg8(const struct device *dev, uint16_t reg, uint8_t *val
     return i2c_write_read_dt(&config->i2c, reg_buf, sizeof(reg_buf), val, 1);
 }
 
+/* Retry-enabled read helpers for diagnostic use only. */
+static int iqs5xx_read_reg8_retry(const struct device *dev, uint16_t reg, uint8_t *val) {
+    int ret;
+    for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
+        ret = iqs5xx_read_reg8(dev, reg, val);
+        if (ret == 0) return 0;
+        k_usleep(IQS5XX_I2C_RETRY_BACKOFF_US);
+    }
+    return ret;
+}
+static int iqs5xx_read_reg16_retry(const struct device *dev, uint16_t reg, uint16_t *val) {
+    int ret;
+    for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
+        ret = iqs5xx_read_reg16(dev, reg, val);
+        if (ret == 0) return 0;
+        k_usleep(IQS5XX_I2C_RETRY_BACKOFF_US);
+    }
+    return ret;
+}
+
 /*
  * Burst read N bytes starting at `reg`. The IQS5xx auto-increments the
  * register address within a comm window, so a single i2c_write_read_dt
@@ -477,6 +497,46 @@ static int iqs5xx_setup_device(const struct device *dev) {
         return ret;
     }
 
+    /*
+     * COMPREHENSIVE DIAGNOSTIC SNAPSHOT — capture chip register state into
+     * data->diag for delayed logging by iqs5xx_diagnostic_work_handler.
+     * Reads happen inside the still-open comm window. Read-only — no chip
+     * state changes from this block. All reads use retry helpers.
+     *
+     * Register addresses verified against IQS5xx-B000 datasheet rev 2.1
+     * §8.9 memory map.
+     */
+    {
+        struct iqs5xx_data *data = dev->data;
+        struct iqs5xx_diagnostic_state *d = &data->diag;
+        iqs5xx_read_reg16_retry(dev, 0x0000, &d->product_number);
+        iqs5xx_read_reg16_retry(dev, 0x0002, &d->project_number);
+        iqs5xx_read_reg8_retry(dev, 0x0004, &d->major_version);
+        iqs5xx_read_reg8_retry(dev, 0x0005, &d->minor_version);
+        iqs5xx_read_reg8_retry(dev, 0x063D, &d->total_rx);
+        iqs5xx_read_reg8_retry(dev, 0x063E, &d->total_tx);
+        iqs5xx_read_reg8_retry(dev, 0x065D, &d->rx_to_tx);
+        iqs5xx_read_reg16_retry(dev, 0x066E, &d->x_resolution);
+        iqs5xx_read_reg16_retry(dev, 0x0670, &d->y_resolution);
+        iqs5xx_read_reg8_retry(dev, 0x0632, &d->filter_settings);
+        iqs5xx_read_reg8_retry(dev, 0x0633, &d->xy_static_beta);
+        iqs5xx_read_reg8_retry(dev, 0x0637, &d->bottom_beta);
+        iqs5xx_read_reg8_retry(dev, 0x0638, &d->lower_speed);
+        iqs5xx_read_reg16_retry(dev, 0x0639, &d->upper_speed);
+        iqs5xx_read_reg8_retry(dev, 0x0672, &d->stationary_threshold);
+        iqs5xx_read_reg8_retry(dev, 0x066A, &d->max_multi_touches);
+        iqs5xx_read_reg8_retry(dev, 0x066B, &d->finger_split);
+        iqs5xx_read_reg8_retry(dev, 0x066C, &d->palm_reject_threshold);
+        iqs5xx_read_reg8_retry(dev, 0x066D, &d->palm_reject_timeout);
+        iqs5xx_read_reg8_retry(dev, 0x0584, &d->active_mode_timeout);
+        iqs5xx_read_reg8_retry(dev, 0x0585, &d->idle_touch_timeout);
+        iqs5xx_read_reg8_retry(dev, 0x0586, &d->idle_mode_timeout);
+        iqs5xx_read_reg8_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &d->system_config_0);
+        iqs5xx_read_reg8_retry(dev, IQS5XX_SYSTEM_CONFIG_1, &d->system_config_1);
+        iqs5xx_read_reg8_retry(dev, IQS5XX_XY_CONFIG_0, &d->xy_config_0);
+        d->ready = true;
+    }
+
     // End communication window.
     ret = iqs5xx_end_comm_window(dev);
     if (ret < 0) {
@@ -485,6 +545,51 @@ static int iqs5xx_setup_device(const struct device *dev) {
     }
 
     return 0;
+}
+
+/* Delayed comprehensive diagnostic logger. Fires 3s after init when USB
+ * CDC is up. Logs everything we captured in setup_device. */
+static void iqs5xx_diagnostic_work_handler(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct iqs5xx_data *data = CONTAINER_OF(dwork, struct iqs5xx_data, diagnostic_work);
+    struct iqs5xx_diagnostic_state *d = &data->diag;
+    if (!d->ready) return;
+
+    LOG_INF("=========== IQS5xx COMPREHENSIVE DIAGNOSTIC ===========");
+    LOG_INF("PRODUCT (0x0000) = %u  (58=IQS572, 40=IQS550, 52=IQS525)",
+            d->product_number);
+    LOG_INF("PROJECT (0x0002) = %u   VERSION = %u.%u",
+            d->project_number, d->major_version, d->minor_version);
+    LOG_INF("--- channel config (THIS determines max resolution) ---");
+    LOG_INF("TOTAL_RX (0x063D) = %u", d->total_rx);
+    LOG_INF("TOTAL_TX (0x063E) = %u", d->total_tx);
+    LOG_INF("RX_TO_TX (0x065D) = 0x%02x", d->rx_to_tx);
+    if (d->total_rx > 0 && d->total_tx > 0) {
+        LOG_INF("=> chip-reported max resolution: %u x %u",
+                (d->total_rx > 1) ? (d->total_rx - 1) * 256 : 0,
+                (d->total_tx > 1) ? (d->total_tx - 1) * 256 : 0);
+    }
+    LOG_INF("--- current resolution ---");
+    LOG_INF("X_RESOLUTION (0x066E) = %u", d->x_resolution);
+    LOG_INF("Y_RESOLUTION (0x0670) = %u", d->y_resolution);
+    LOG_INF("--- filter ---");
+    LOG_INF("FILTER_SETTINGS (0x0632) = 0x%02x  XY_STATIC_BETA = %u  BOTTOM_BETA = %u",
+            d->filter_settings, d->xy_static_beta, d->bottom_beta);
+    LOG_INF("LOWER_SPEED = %u  UPPER_SPEED = %u", d->lower_speed, d->upper_speed);
+    LOG_INF("STATIONARY_THRESH (0x0672) = %u", d->stationary_threshold);
+    LOG_INF("--- palm / multi-touch ---");
+    LOG_INF("MAX_MULTI_TOUCHES (0x066A) = %u  FINGER_SPLIT (0x066B) = %u",
+            d->max_multi_touches, d->finger_split);
+    LOG_INF("PALM_REJECT_THRESHOLD (0x066C) = %u  TIMEOUT (0x066D) = %u (units: 32ms)",
+            d->palm_reject_threshold, d->palm_reject_timeout);
+    LOG_INF("--- mode timeouts ---");
+    LOG_INF("ACTIVE (0x0584) = %u  IDLE_TOUCH (0x0585) = %u  IDLE (0x0586) = %u",
+            d->active_mode_timeout, d->idle_touch_timeout, d->idle_mode_timeout);
+    LOG_INF("--- system / config ---");
+    LOG_INF("SYSTEM_CONFIG_0 (0x058E) = 0x%02x  SYSTEM_CONFIG_1 (0x058F) = 0x%02x",
+            d->system_config_0, d->system_config_1);
+    LOG_INF("XY_CONFIG_0 (0x0669) = 0x%02x", d->xy_config_0);
+    LOG_INF("=========== END DIAGNOSTIC ===========");
 }
 
 static int iqs5xx_init(const struct device *dev) {
@@ -500,6 +605,7 @@ static int iqs5xx_init(const struct device *dev) {
     data->dev = dev;
     k_work_init(&data->work, iqs5xx_work_handler);
     k_work_init_delayable(&data->button_release_work, iqs5xx_button_release_work_handler);
+    k_work_init_delayable(&data->diagnostic_work, iqs5xx_diagnostic_work_handler);
 
     // Configure reset GPIO if available.
     if (config->reset_gpio.port) {
@@ -567,6 +673,9 @@ static int iqs5xx_init(const struct device *dev) {
 
     data->initialized = true;
     LOG_INF("IQS5xx trackpad initialized");
+
+    /* Schedule comprehensive diagnostic dump 3s out — USB CDC is up. */
+    k_work_schedule(&data->diagnostic_work, K_SECONDS(3));
 
     return 0;
 }

@@ -175,11 +175,51 @@ struct iqs5xx_config {
     bool reati;
 };
 
+/* Comprehensive diagnostic snapshot — captured during setup_device,
+ * logged 3s later by delayed work after USB CDC has enumerated. */
+struct iqs5xx_diagnostic_state {
+    bool ready;
+    /* Chip ID. */
+    uint16_t product_number;       /* 0x0000 — 58=IQS572, 40=IQS550, 52=IQS525 */
+    uint16_t project_number;       /* 0x0002 — Azoteq GUI export project ID */
+    uint8_t major_version;         /* 0x0004 */
+    uint8_t minor_version;         /* 0x0005 */
+    /* Channel config (the load-bearing data for "max resolution"). */
+    uint8_t total_rx;              /* 0x063D */
+    uint8_t total_tx;              /* 0x063E */
+    uint8_t rx_to_tx;              /* 0x065D */
+    /* Resolution. */
+    uint16_t x_resolution;         /* 0x066E */
+    uint16_t y_resolution;         /* 0x0670 */
+    /* Filter config. */
+    uint8_t filter_settings;       /* 0x0632 */
+    uint8_t xy_static_beta;        /* 0x0633 */
+    uint8_t bottom_beta;           /* 0x0637 */
+    uint8_t lower_speed;           /* 0x0638 */
+    uint16_t upper_speed;          /* 0x0639 */
+    /* Stationary / palm. */
+    uint8_t stationary_threshold;  /* 0x0672 */
+    uint8_t max_multi_touches;     /* 0x066A */
+    uint8_t finger_split;          /* 0x066B */
+    uint8_t palm_reject_threshold; /* 0x066C */
+    uint8_t palm_reject_timeout;   /* 0x066D */
+    /* Mode timeouts. */
+    uint8_t active_mode_timeout;   /* 0x0584 */
+    uint8_t idle_touch_timeout;    /* 0x0585 */
+    uint8_t idle_mode_timeout;     /* 0x0586 */
+    /* System state. */
+    uint8_t system_config_0;       /* 0x058E */
+    uint8_t system_config_1;       /* 0x058F */
+    uint8_t xy_config_0;           /* 0x0669 */
+};
+
 struct iqs5xx_data {
     const struct device *dev;
     struct gpio_callback rdy_cb;
     struct k_work work;
     struct k_work_delayable button_release_work;
+    struct k_work_delayable diagnostic_work;
+    struct iqs5xx_diagnostic_state diag;
     // TODO: Pack flags into a bitfield to save space.
     bool initialized;
     // Flag to indicate if the button was pressed in a previous cycle.
