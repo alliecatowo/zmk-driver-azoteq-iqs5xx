@@ -91,6 +91,33 @@ static int iqs5xx_read_reg8(const struct device *dev, uint16_t reg, uint8_t *val
 }
 
 /*
+ * Diagnostic-only read helpers that DO retry. Use only at init for
+ * NVD-state observability, NOT in the runtime hot loop. The retry is
+ * needed because the very first read after ACK_RESET often NACKs while
+ * the chip's comm window is still closing — without retry, the first
+ * NVD read silently fails and we miss critical diagnostic data.
+ */
+static int iqs5xx_read_reg8_with_retry(const struct device *dev, uint16_t reg, uint8_t *val) {
+    int ret;
+    for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
+        ret = iqs5xx_read_reg8(dev, reg, val);
+        if (ret == 0) return 0;
+        k_usleep(IQS5XX_I2C_RETRY_BACKOFF_US);
+    }
+    return ret;
+}
+
+static int iqs5xx_read_reg16_with_retry(const struct device *dev, uint16_t reg, uint16_t *val) {
+    int ret;
+    for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
+        ret = iqs5xx_read_reg16(dev, reg, val);
+        if (ret == 0) return 0;
+        k_usleep(IQS5XX_I2C_RETRY_BACKOFF_US);
+    }
+    return ret;
+}
+
+/*
  * Burst read N bytes starting at `reg`. The IQS5xx auto-increments the
  * register address within a comm window, so a single i2c_write_read_dt
  * pulls a contiguous block. Used in the work handler to read all per-event
@@ -337,46 +364,56 @@ static int iqs5xx_setup_device(const struct device *dev) {
     k_msleep(10);
 
     /*
-     * READ-ONLY NVD DIAGNOSTIC — does NOT write any register, just dumps
-     * the chip's pre-our-config state so we know what NVD has. Helps us
-     * decide what values to write (or whether to write at all) without
-     * blindly forcing chip-die-max values that may exceed what the
-     * specific module's channel wiring supports.
-     *
-     * Spaced over multiple LOG_INF lines to make sure they all fit in any
-     * log ring buffer. Visible only on USB-serial debug build.
+     * READ-ONLY NVD DIAGNOSTIC — dumps chip's pre-write state with retry
+     * (chip's first I2C transaction after ACK_RESET often NACKs as the
+     * comm window finishes closing; retry handles this). 50ms settle
+     * delay before any reads gives the chip's ATI a chance to start.
      */
+    k_msleep(50);
     {
         uint8_t r8 = 0;
         uint16_t r16 = 0;
-        if (iqs5xx_read_reg16(dev, 0x066E, &r16) == 0) {
+        LOG_INF("=== Pre-write NVD readback ===");
+        if (iqs5xx_read_reg16_with_retry(dev, 0x0000, &r16) == 0) {
+            LOG_INF("PRODUCT_NUMBER (0x0000) = %u", r16);
+        }
+        if (iqs5xx_read_reg16_with_retry(dev, 0x0002, &r16) == 0) {
+            LOG_INF("PROJECT_NUMBER (0x0002) = %u", r16);
+        }
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0004, &r8) == 0) {
+            LOG_INF("MAJOR_VERSION (0x0004) = %u", r8);
+        }
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0005, &r8) == 0) {
+            LOG_INF("MINOR_VERSION (0x0005) = %u", r8);
+        }
+        if (iqs5xx_read_reg16_with_retry(dev, 0x066E, &r16) == 0) {
             LOG_INF("NVD X_RESOLUTION (0x066E) = %u", r16);
         }
-        if (iqs5xx_read_reg16(dev, 0x0670, &r16) == 0) {
+        if (iqs5xx_read_reg16_with_retry(dev, 0x0670, &r16) == 0) {
             LOG_INF("NVD Y_RESOLUTION (0x0670) = %u", r16);
         }
-        if (iqs5xx_read_reg8(dev, 0x0632, &r8) == 0) {
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0632, &r8) == 0) {
             LOG_INF("NVD FILTER_SETTINGS (0x0632) = 0x%02x", r8);
         }
-        if (iqs5xx_read_reg8(dev, 0x0633, &r8) == 0) {
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0633, &r8) == 0) {
             LOG_INF("NVD XY_STATIC_BETA (0x0633) = %u", r8);
         }
-        if (iqs5xx_read_reg8(dev, 0x0637, &r8) == 0) {
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0637, &r8) == 0) {
             LOG_INF("NVD BOTTOM_BETA (0x0637) = %u", r8);
         }
-        if (iqs5xx_read_reg8(dev, 0x0638, &r8) == 0) {
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0638, &r8) == 0) {
             LOG_INF("NVD LOWER_SPEED (0x0638) = %u", r8);
         }
-        if (iqs5xx_read_reg16(dev, 0x0639, &r16) == 0) {
+        if (iqs5xx_read_reg16_with_retry(dev, 0x0639, &r16) == 0) {
             LOG_INF("NVD UPPER_SPEED (0x0639) = %u", r16);
         }
-        if (iqs5xx_read_reg8(dev, 0x0586, &r8) == 0) {
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0586, &r8) == 0) {
             LOG_INF("NVD IDLE_MODE_TIMEOUT (0x0586) = %u", r8);
         }
-        if (iqs5xx_read_reg8(dev, IQS5XX_SYSTEM_CONFIG_0, &r8) == 0) {
+        if (iqs5xx_read_reg8_with_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &r8) == 0) {
             LOG_INF("NVD SYSTEM_CONFIG_0 (0x058E) = 0x%02x", r8);
         }
-        if (iqs5xx_read_reg8(dev, IQS5XX_XY_CONFIG_0, &r8) == 0) {
+        if (iqs5xx_read_reg8_with_retry(dev, IQS5XX_XY_CONFIG_0, &r8) == 0) {
             LOG_INF("NVD XY_CONFIG_0 (0x0669) = 0x%02x", r8);
         }
     }
@@ -542,6 +579,38 @@ static int iqs5xx_setup_device(const struct device *dev) {
         return ret;
     }
 
+    /*
+     * POST-WRITE diagnostic readback. Confirms which writes actually
+     * stuck on the chip vs what the chip reverted or clamped. Critical
+     * for diagnosing whether resolution writes (when we add them) stick
+     * or get clamped to chip's actual capability.
+     */
+    k_msleep(20);
+    {
+        uint8_t r8 = 0;
+        uint16_t r16 = 0;
+        LOG_INF("=== Post-write readback ===");
+        if (iqs5xx_read_reg16_with_retry(dev, 0x066E, &r16) == 0) {
+            LOG_INF("X_RESOLUTION (0x066E) = %u", r16);
+        }
+        if (iqs5xx_read_reg16_with_retry(dev, 0x0670, &r16) == 0) {
+            LOG_INF("Y_RESOLUTION (0x0670) = %u", r16);
+        }
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0633, &r8) == 0) {
+            LOG_INF("XY_STATIC_BETA (0x0633) = %u", r8);
+        }
+        if (iqs5xx_read_reg8_with_retry(dev, 0x0586, &r8) == 0) {
+            LOG_INF("IDLE_MODE_TIMEOUT (0x0586) = %u", r8);
+        }
+        if (iqs5xx_read_reg8_with_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &r8) == 0) {
+            LOG_INF("SYSTEM_CONFIG_0 (0x058E) = 0x%02x", r8);
+        }
+        if (iqs5xx_read_reg8_with_retry(dev, IQS5XX_XY_CONFIG_0, &r8) == 0) {
+            LOG_INF("XY_CONFIG_0 (0x0669) = 0x%02x", r8);
+        }
+        iqs5xx_end_comm_window(dev);
+    }
+
     return 0;
 }
 
@@ -654,7 +723,7 @@ static int iqs5xx_init(const struct device *dev) {
         .disable_idle_timeout = DT_INST_PROP_OR(n, disable_idle_timeout, true),                    \
         .palm_reject = DT_INST_PROP_OR(n, palm_reject, true),                                      \
         .reati = DT_INST_PROP_OR(n, reati, true),                                                  \
-        .xy_static_beta = DT_INST_PROP_OR(n, xy_static_beta, 200),                                 \
+        .xy_static_beta = DT_INST_PROP_OR(n, xy_static_beta, 0),                                   \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, iqs5xx_init, NULL, &iqs5xx_data_##n, &iqs5xx_config_##n, POST_KERNEL, \
                           CONFIG_INPUT_INIT_PRIORITY, NULL);

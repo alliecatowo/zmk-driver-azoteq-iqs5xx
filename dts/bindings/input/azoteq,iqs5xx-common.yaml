@@ -130,4 +130,9 @@ properties:
       doesn't make it through the filter. Moderate values (150-220) give
       smoothing without freezing.
       Set to 0 to leave chip at NVD default.
-    default: 200
+
+      Empirical: NVD value on this TPS43 module = 0. Writing 200 felt
+      WORSE (less sensitive, more jumps). Direction TBD — try lower
+      values (e.g. 50, 30, 10) before raising. Default is 0 to match
+      Tier 0 baseline feel until we determine the correct direction.
+    default: 0
