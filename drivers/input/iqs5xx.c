@@ -431,6 +431,27 @@ static int iqs5xx_setup_device(const struct device *dev) {
      * which may have been tuned for a different host config. Symptom of
      * a too-low resolution: finger motion produces chunky deltas, minute
      * movements get lost in rounding ("moves in blocks" feel). */
+
+    /* Read-back diagnostic: log the chip's NVD-configured resolution BEFORE
+     * we overwrite it. This tells us whether the chip was at native max or
+     * something lower — directly confirms whether this patch was even
+     * necessary. Visible in USB serial debug build only (LOG_INF). */
+    {
+        uint16_t nvd_x = 0, nvd_y = 0;
+        int rb_ret;
+        rb_ret = iqs5xx_read_reg16(dev, IQS5XX_X_RESOLUTION, &nvd_x);
+        if (rb_ret == 0) {
+            rb_ret = iqs5xx_read_reg16(dev, IQS5XX_Y_RESOLUTION, &nvd_y);
+        }
+        if (rb_ret == 0) {
+            LOG_INF("Chip NVD resolution: X=%u Y=%u (will write X=%u Y=%u)",
+                    nvd_x, nvd_y,
+                    config->x_resolution, config->y_resolution);
+        } else {
+            LOG_WRN("Failed to read NVD resolution: %d", rb_ret);
+        }
+    }
+
     if (config->x_resolution > 0) {
         ret = iqs5xx_write_reg16(dev, IQS5XX_X_RESOLUTION, config->x_resolution);
         if (ret < 0) {
