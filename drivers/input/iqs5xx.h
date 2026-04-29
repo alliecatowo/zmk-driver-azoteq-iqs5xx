@@ -11,6 +11,19 @@
 #define IQS5XX_BOTTOM_BETA 0x0637
 #define IQS5XX_STATIONARY_THRESH 0x0672
 
+/* XY static beta (uint8). Datasheet §5.9.2: this register is BOTH the
+ * static-IIR beta (when IIR_SELECT=1) AND the maximum-filtering beta of
+ * the dynamic IIR (when IIR_SELECT=0) at speeds below LOWER_SPEED. Per
+ * AYM1607 binding doc convention: 0 = MAX filter (very heavy / freezes
+ * at slow speed), 255 = MIN filter (passthrough).
+ *
+ * Diagnostic readout on our specific TPS43 module showed NVD value = 0
+ * which means "freeze filter at slow speed" — directly produces the
+ * "moves in blocks" quantization symptom because at low finger speeds
+ * the chip's IIR output stops updating until motion exceeds threshold.
+ * Setting a moderate value (~150-200) gives smoothing without freezing. */
+#define IQS5XX_XY_STATIC_BETA 0x0633
+
 /* Active mode report rate (uint16, ms). Chip default 10 = 100Hz. Lowering
  * to 5-7 ms gives 140-200Hz for smoother tracking under fast motion. */
 #define IQS5XX_REPORT_RATE_ACTIVE 0x057A
@@ -173,6 +186,10 @@ struct iqs5xx_config {
 
     // Enable autonomous Re-ATI calibration (SYSTEM_CONFIG_0 bits 2 + 3).
     bool reati;
+
+    // XY static beta (max-filter beta at slow speed of dynamic IIR).
+    // 0 = leave at chip NVD default. 1-255 = write that value.
+    uint8_t xy_static_beta;
 };
 
 struct iqs5xx_data {

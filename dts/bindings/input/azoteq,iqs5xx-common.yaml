@@ -116,3 +116,18 @@ properties:
       while a finger is present — symptom is "long touches gradually lose
       sensitivity until release." Datasheet §3.7.2.
       Default true (matches Linux mainline + QMK upstream behavior).
+
+  xy-static-beta:
+    type: int
+    description: |
+      XY static beta (register 0x0633, datasheet §5.9.2). When IIR_SELECT=0
+      (dynamic IIR mode), this is the MAXIMUM-filtering beta applied at
+      slow finger speeds. Per AYM1607 binding doc convention:
+        0   = max filter (very heavy, freezes filter at slow speeds — bad)
+        255 = min filter (passthrough, no smoothing — also bad)
+      Diagnostic showed our TPS43 module's NVD value = 0, which produces
+      "moves in blocks" quantization symptom because slow finger motion
+      doesn't make it through the filter. Moderate values (150-220) give
+      smoothing without freezing.
+      Set to 0 to leave chip at NVD default.
+    default: 200

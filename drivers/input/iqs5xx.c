@@ -457,6 +457,19 @@ static int iqs5xx_setup_device(const struct device *dev) {
         }
     }
 
+    /* Write XY_STATIC_BETA when configured. This is the slow-speed
+     * max-filter beta of the dynamic IIR. NVD on our TPS43 module ships
+     * as 0 = filter freezes at slow speed = "moves in blocks" quantization.
+     * Moderate value (~150-200) gives smoothing without freezing.
+     * Setting to 0 leaves chip at NVD default. */
+    if (config->xy_static_beta > 0) {
+        ret = iqs5xx_write_reg8(dev, IQS5XX_XY_STATIC_BETA, config->xy_static_beta);
+        if (ret < 0) {
+            LOG_ERR("Failed to set XY static beta: %d", ret);
+            return ret;
+        }
+    }
+
     /* Disable LP1/LP2 sleep transitions when configured. Datasheet §4.2:
      * 0xFF = never timeout. Prevents filter-state discontinuity that
      * surfaces as a "first-touch is sluggish" feel after the chip wakes. */
@@ -641,6 +654,7 @@ static int iqs5xx_init(const struct device *dev) {
         .disable_idle_timeout = DT_INST_PROP_OR(n, disable_idle_timeout, true),                    \
         .palm_reject = DT_INST_PROP_OR(n, palm_reject, true),                                      \
         .reati = DT_INST_PROP_OR(n, reati, true),                                                  \
+        .xy_static_beta = DT_INST_PROP_OR(n, xy_static_beta, 200),                                 \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, iqs5xx_init, NULL, &iqs5xx_data_##n, &iqs5xx_config_##n, POST_KERNEL, \
                           CONFIG_INPUT_INIT_PRIORITY, NULL);
