@@ -336,6 +336,51 @@ static int iqs5xx_setup_device(const struct device *dev) {
     }
     k_msleep(10);
 
+    /*
+     * READ-ONLY NVD DIAGNOSTIC — does NOT write any register, just dumps
+     * the chip's pre-our-config state so we know what NVD has. Helps us
+     * decide what values to write (or whether to write at all) without
+     * blindly forcing chip-die-max values that may exceed what the
+     * specific module's channel wiring supports.
+     *
+     * Spaced over multiple LOG_INF lines to make sure they all fit in any
+     * log ring buffer. Visible only on USB-serial debug build.
+     */
+    {
+        uint8_t r8 = 0;
+        uint16_t r16 = 0;
+        if (iqs5xx_read_reg16(dev, 0x066E, &r16) == 0) {
+            LOG_INF("NVD X_RESOLUTION (0x066E) = %u", r16);
+        }
+        if (iqs5xx_read_reg16(dev, 0x0670, &r16) == 0) {
+            LOG_INF("NVD Y_RESOLUTION (0x0670) = %u", r16);
+        }
+        if (iqs5xx_read_reg8(dev, 0x0632, &r8) == 0) {
+            LOG_INF("NVD FILTER_SETTINGS (0x0632) = 0x%02x", r8);
+        }
+        if (iqs5xx_read_reg8(dev, 0x0633, &r8) == 0) {
+            LOG_INF("NVD XY_STATIC_BETA (0x0633) = %u", r8);
+        }
+        if (iqs5xx_read_reg8(dev, 0x0637, &r8) == 0) {
+            LOG_INF("NVD BOTTOM_BETA (0x0637) = %u", r8);
+        }
+        if (iqs5xx_read_reg8(dev, 0x0638, &r8) == 0) {
+            LOG_INF("NVD LOWER_SPEED (0x0638) = %u", r8);
+        }
+        if (iqs5xx_read_reg16(dev, 0x0639, &r16) == 0) {
+            LOG_INF("NVD UPPER_SPEED (0x0639) = %u", r16);
+        }
+        if (iqs5xx_read_reg8(dev, 0x0586, &r8) == 0) {
+            LOG_INF("NVD IDLE_MODE_TIMEOUT (0x0586) = %u", r8);
+        }
+        if (iqs5xx_read_reg8(dev, IQS5XX_SYSTEM_CONFIG_0, &r8) == 0) {
+            LOG_INF("NVD SYSTEM_CONFIG_0 (0x058E) = 0x%02x", r8);
+        }
+        if (iqs5xx_read_reg8(dev, IQS5XX_XY_CONFIG_0, &r8) == 0) {
+            LOG_INF("NVD XY_CONFIG_0 (0x0669) = 0x%02x", r8);
+        }
+    }
+
     // Clear SETUP_COMPLETE before any other config writes.
     //
     // The IQS5xx series treats register writes as advisory once SETUP_COMPLETE
