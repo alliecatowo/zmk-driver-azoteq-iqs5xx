@@ -364,12 +364,11 @@ static int iqs5xx_setup_device(const struct device *dev) {
     k_msleep(10);
 
     /*
-     * READ-ONLY NVD DIAGNOSTIC — captures chip's pre-write state into
-     * data->diag for later logging by the delayed diagnostic work.
-     * USB CDC isn't enumerated yet at this point, so direct LOG_INF
-     * here would be lost; we defer logging to ~3s post-init.
+     * READ-ONLY NVD DIAGNOSTIC — capture pre-write state into data->diag.
+     * 5ms settle (was 50ms — long delay may have caused chip to auto-lock
+     * setup mode before our writes landed).
      */
-    k_msleep(50);
+    k_msleep(5);
     {
         struct iqs5xx_data *data = dev->data;
         struct iqs5xx_diagnostic_state *d = &data->diag;
@@ -379,6 +378,15 @@ static int iqs5xx_setup_device(const struct device *dev) {
         iqs5xx_read_reg8_with_retry(dev, 0x0005, &d->pre_minor_version);
         iqs5xx_read_reg16_with_retry(dev, 0x066E, &d->pre_x_resolution);
         iqs5xx_read_reg16_with_retry(dev, 0x0670, &d->pre_y_resolution);
+        /* Candidate "max resolution" register reads. The IQS5xx-B000
+         * datasheet doesn't publish read-only X_RES_MAX/Y_RES_MAX
+         * registers explicitly — the chip's actual capability is
+         * determined by the configured Rx/Tx channel count. Probing
+         * these candidate addresses to see what's there. */
+        iqs5xx_read_reg8_with_retry(dev, 0x063D, &d->probe_063d);
+        iqs5xx_read_reg8_with_retry(dev, 0x063E, &d->probe_063e);
+        iqs5xx_read_reg16_with_retry(dev, 0x067A, &d->probe_067a);
+        iqs5xx_read_reg16_with_retry(dev, 0x067C, &d->probe_067c);
         iqs5xx_read_reg8_with_retry(dev, 0x0632, &d->pre_filter_settings);
         iqs5xx_read_reg8_with_retry(dev, 0x0633, &d->pre_xy_static_beta);
         iqs5xx_read_reg8_with_retry(dev, 0x0637, &d->pre_bottom_beta);
@@ -543,17 +551,12 @@ static int iqs5xx_setup_device(const struct device *dev) {
         return ret;
     }
 
-    // End communication window.
-    ret = iqs5xx_end_comm_window(dev);
-    if (ret < 0) {
-        LOG_ERR("Failed to end comm window during initialization: %d", ret);
-        return ret;
-    }
-
     /*
      * POST-WRITE readback — captures into data->diag for delayed log.
+     * MUST happen BEFORE end_comm_window — reads after end_comm return
+     * unreliable values (saw Y_RES=0, XY_CONFIG_0=0x00 etc that don't
+     * match what was written or what chip should be holding).
      */
-    k_msleep(20);
     {
         struct iqs5xx_data *data = dev->data;
         struct iqs5xx_diagnostic_state *d = &data->diag;
@@ -563,8 +566,14 @@ static int iqs5xx_setup_device(const struct device *dev) {
         iqs5xx_read_reg8_with_retry(dev, 0x0586, &d->post_idle_mode_timeout);
         iqs5xx_read_reg8_with_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &d->post_system_config_0);
         iqs5xx_read_reg8_with_retry(dev, IQS5XX_XY_CONFIG_0, &d->post_xy_config_0);
-        iqs5xx_end_comm_window(dev);
         d->ready = true;
+    }
+
+    // End communication window.
+    ret = iqs5xx_end_comm_window(dev);
+    if (ret < 0) {
+        LOG_ERR("Failed to end comm window during initialization: %d", ret);
+        return ret;
     }
 
     return 0;
@@ -591,6 +600,10 @@ static void iqs5xx_diagnostic_work_handler(struct k_work *work) {
     LOG_INF("VERSION (0x0004/0x0005) = %u.%u", d->pre_major_version, d->pre_minor_version);
     LOG_INF("X_RESOLUTION (0x066E) = %u", d->pre_x_resolution);
     LOG_INF("Y_RESOLUTION (0x0670) = %u", d->pre_y_resolution);
+    LOG_INF("PROBE 0x063D = 0x%02x (%u)", d->probe_063d, d->probe_063d);
+    LOG_INF("PROBE 0x063E = 0x%02x (%u)", d->probe_063e, d->probe_063e);
+    LOG_INF("PROBE 0x067A = %u", d->probe_067a);
+    LOG_INF("PROBE 0x067C = %u", d->probe_067c);
     LOG_INF("FILTER_SETTINGS (0x0632) = 0x%02x", d->pre_filter_settings);
     LOG_INF("XY_STATIC_BETA (0x0633) = %u", d->pre_xy_static_beta);
     LOG_INF("BOTTOM_BETA (0x0637) = %u", d->pre_bottom_beta);

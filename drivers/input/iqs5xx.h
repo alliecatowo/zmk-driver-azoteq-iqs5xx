@@ -205,6 +205,11 @@ struct iqs5xx_diagnostic_state {
     uint8_t pre_minor_version;
     uint16_t pre_x_resolution;
     uint16_t pre_y_resolution;
+    /* Candidate "max resolution" / channel-count probe reads. */
+    uint8_t probe_063d;
+    uint8_t probe_063e;
+    uint16_t probe_067a;
+    uint16_t probe_067c;
     uint8_t pre_filter_settings;
     uint8_t pre_xy_static_beta;
     uint8_t pre_bottom_beta;
