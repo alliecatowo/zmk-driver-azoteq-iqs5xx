@@ -518,7 +518,7 @@ static int iqs5xx_setup_device(const struct device *dev) {
     {
         struct iqs5xx_data *data = dev->data;
         struct iqs5xx_diagnostic_state *d = &data->diag;
-        uint8_t b1[12], b2[12], b3[20], b4[25];
+        uint8_t b1[12], b2[45], b3[20], b4[25];
 
         if (iqs5xx_read_burst(dev, 0x0000, b1, sizeof(b1)) == 0) {
             d->product_number = (b1[0] << 8) | b1[1];
@@ -526,14 +526,27 @@ static int iqs5xx_setup_device(const struct device *dev) {
             d->major_version = b1[4];
             d->minor_version = b1[5];
         }
-        if (iqs5xx_read_burst(dev, 0x0584, b2, sizeof(b2)) == 0) {
-            d->active_mode_timeout = b2[0];   /* 0x0584 */
-            d->idle_touch_timeout = b2[1];    /* 0x0585 */
-            d->idle_mode_timeout = b2[2];     /* 0x0586 */
-            /* b2[3]=LP1 timeout, b2[4]=LP2 timeout, b2[5]=Snap timeout */
-            /* b2[6]=I2C timeout, b2[7..9] = open */
-            d->system_config_0 = b2[10];      /* 0x058E */
-            d->system_config_1 = b2[11];      /* 0x058F */
+        /* Burst 2: 0x056B..0x0597 (45 bytes) — ATI, mode timeouts, sys
+         * config, prox thresholds, global touch multipliers. The ATI
+         * data drives sensitivity through thicker overlays. */
+        if (iqs5xx_read_burst(dev, 0x056B, b2, sizeof(b2)) == 0) {
+            d->ati_c = b2[0];                 /* 0x056B */
+            /* b2[1] = 0x056C — single byte, not currently captured */
+            d->ati_target = (b2[2] << 8) | b2[3]; /* 0x056D-0x056E */
+            /* b2[4..24] = 0x056F-0x0583 (lots of channel-related setup) */
+            d->active_mode_timeout = b2[25];  /* 0x0584 */
+            d->idle_touch_timeout = b2[26];   /* 0x0585 */
+            d->idle_mode_timeout = b2[27];    /* 0x0586 */
+            /* b2[28..30] = LP1, LP2, Snap timeouts */
+            /* b2[31] = I2C timeout */
+            /* b2[32..34] = open */
+            d->system_config_0 = b2[35];      /* 0x058E */
+            d->system_config_1 = b2[36];      /* 0x058F */
+            /* b2[37..40] = open (0x0590-0x0593) */
+            d->prox_threshold = b2[41];       /* 0x0594 */
+            d->alp_prox_threshold = b2[42];   /* 0x0595 */
+            d->global_touch_set = b2[43];     /* 0x0596 */
+            d->global_touch_clear = b2[44];   /* 0x0597 */
         }
         if (iqs5xx_read_burst(dev, 0x0632, b3, sizeof(b3)) == 0) {
             d->filter_settings = b3[0];        /* 0x0632 */
@@ -627,6 +640,13 @@ static void iqs5xx_diagnostic_work_handler(struct k_work *work) {
     LOG_INF("--- mode timeouts ---");
     LOG_INF("ACTIVE (0x0584) = %u  IDLE_TOUCH (0x0585) = %u  IDLE (0x0586) = %u",
             d->active_mode_timeout, d->idle_touch_timeout, d->idle_mode_timeout);
+    LOG_INF("--- ATI / sensitivity (overlay tuning) ---");
+    LOG_INF("ATI_C (0x056B) = %u  ATI_TARGET (0x056D) = %u",
+            d->ati_c, d->ati_target);
+    LOG_INF("PROX_THRESH trackpad (0x0594) = %u  ALP (0x0595) = %u",
+            d->prox_threshold, d->alp_prox_threshold);
+    LOG_INF("GLOBAL_TOUCH_MULT set (0x0596) = %u  clear (0x0597) = %u",
+            d->global_touch_set, d->global_touch_clear);
     LOG_INF("--- system / config ---");
     LOG_INF("SYSTEM_CONFIG_0 (0x058E) = 0x%02x  SYSTEM_CONFIG_1 (0x058F) = 0x%02x",
             d->system_config_0, d->system_config_1);

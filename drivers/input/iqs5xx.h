@@ -219,6 +219,13 @@ struct iqs5xx_diagnostic_state {
     uint8_t system_config_0;       /* 0x058E */
     uint8_t system_config_1;       /* 0x058F */
     uint8_t xy_config_0;           /* 0x0669 */
+    /* ATI / sensitivity registers (overlay-thickness compensation). */
+    uint8_t ati_c;                 /* 0x056B */
+    uint16_t ati_target;           /* 0x056D-0x056E */
+    uint8_t prox_threshold;        /* 0x0594 — trackpad prox threshold */
+    uint8_t alp_prox_threshold;    /* 0x0595 — ALP prox threshold */
+    uint8_t global_touch_set;      /* 0x0596 */
+    uint8_t global_touch_clear;    /* 0x0597 */
 };
 
 struct iqs5xx_data {
