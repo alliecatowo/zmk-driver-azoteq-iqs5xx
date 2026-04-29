@@ -175,11 +175,32 @@ struct iqs5xx_config {
     bool reati;
 };
 
+/* Read-only diagnostic snapshot — captured during setup_device, logged
+ * by a delayed work 3 seconds later (after USB CDC has enumerated). */
+struct iqs5xx_diagnostic_state {
+    bool ready;
+    uint16_t product_number;
+    uint16_t project_number;
+    uint8_t major_version;
+    uint8_t minor_version;
+    uint16_t x_resolution;
+    uint16_t y_resolution;
+    /* Channel-related candidate "max" probe registers. */
+    uint8_t reg_063b;
+    uint8_t reg_063c;
+    uint8_t reg_063d;
+    uint8_t reg_063e;
+    uint16_t reg_067a;
+    uint16_t reg_067c;
+};
+
 struct iqs5xx_data {
     const struct device *dev;
     struct gpio_callback rdy_cb;
     struct k_work work;
     struct k_work_delayable button_release_work;
+    struct k_work_delayable diagnostic_work;
+    struct iqs5xx_diagnostic_state diag;
     // TODO: Pack flags into a bitfield to save space.
     bool initialized;
     // Flag to indicate if the button was pressed in a previous cycle.
