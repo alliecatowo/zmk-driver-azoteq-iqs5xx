@@ -477,20 +477,27 @@ static int iqs5xx_setup_device(const struct device *dev) {
         return ret;
     }
 
-    /* Resolution writes — DT-controlled. 0 = no write (leave at NVD).
-     * Writes happen in setup mode (SETUP_COMPLETE = 0); diagnostic
-     * burst-read below captures post-write state for verification. */
-    if (config->x_resolution > 0) {
-        ret = iqs5xx_write_reg16(dev, IQS5XX_X_RESOLUTION, config->x_resolution);
+    /* Resolution write — atomic 4-byte transaction (matches holykeebs).
+     * X_RESOLUTION (0x066E-0x066F) and Y_RESOLUTION (0x0670-0x0671) are
+     * contiguous; the chip auto-increments through them in a single
+     * transaction. Two separate write_reg16 calls don't work — chip
+     * appears to silently drop the second (observed: X write stuck
+     * but Y write was ignored when we did them separately).
+     *
+     * Skip entirely if both DT props are 0. */
+    if (config->x_resolution > 0 || config->y_resolution > 0) {
+        const struct iqs5xx_config *cfg = config;
+        uint8_t buf[6] = {
+            (IQS5XX_X_RESOLUTION >> 8) & 0xFF,
+            IQS5XX_X_RESOLUTION & 0xFF,
+            (cfg->x_resolution >> 8) & 0xFF,
+            cfg->x_resolution & 0xFF,
+            (cfg->y_resolution >> 8) & 0xFF,
+            cfg->y_resolution & 0xFF,
+        };
+        ret = iqs5xx_i2c_write_with_retry(dev, buf, sizeof(buf));
         if (ret < 0) {
-            LOG_ERR("Failed to write X_RESOLUTION: %d", ret);
-            /* not fatal */
-        }
-    }
-    if (config->y_resolution > 0) {
-        ret = iqs5xx_write_reg16(dev, IQS5XX_Y_RESOLUTION, config->y_resolution);
-        if (ret < 0) {
-            LOG_ERR("Failed to write Y_RESOLUTION: %d", ret);
+            LOG_ERR("Failed atomic X/Y resolution write: %d", ret);
             /* not fatal */
         }
     }
