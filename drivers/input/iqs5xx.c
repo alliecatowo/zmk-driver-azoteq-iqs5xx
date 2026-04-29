@@ -482,21 +482,6 @@ static int iqs5xx_setup_device(const struct device *dev) {
         return ret;
     }
 
-    /* Final SYSTEM_CONFIG_0 write. SETUP_COMPLETE + WDT always; REATI +
-     * ALP_REATI when configured (default true). Linux/QMK both enable
-     * REATI — chip won't autonomously re-calibrate baseline drift without
-     * these bits, which produces the "slow-drag drifts to silence" symptom
-     * over long touches. */
-    uint8_t system_config_0 = IQS5XX_SETUP_COMPLETE | IQS5XX_WDT;
-    if (config->reati) {
-        system_config_0 |= IQS5XX_REATI | IQS5XX_ALP_REATI;
-    }
-    ret = iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONFIG_0, system_config_0);
-    if (ret < 0) {
-        LOG_ERR("Failed to configure system: %d", ret);
-        return ret;
-    }
-
     /*
      * COMPREHENSIVE DIAGNOSTIC SNAPSHOT — capture chip register state into
      * data->diag for delayed logging by iqs5xx_diagnostic_work_handler.
@@ -535,6 +520,22 @@ static int iqs5xx_setup_device(const struct device *dev) {
         iqs5xx_read_reg8_retry(dev, IQS5XX_SYSTEM_CONFIG_1, &d->system_config_1);
         iqs5xx_read_reg8_retry(dev, IQS5XX_XY_CONFIG_0, &d->xy_config_0);
         d->ready = true;
+    }
+
+    /* Final SYSTEM_CONFIG_0 write — moved AFTER diagnostic so reads happen
+     * with chip still in setup mode (SETUP_COMPLETE = 0), where reads are
+     * reliable per datasheet §8.10.9. Setting the bit transitions chip to
+     * active mode where reads can NACK. */
+    {
+        uint8_t system_config_0 = IQS5XX_SETUP_COMPLETE | IQS5XX_WDT;
+        if (config->reati) {
+            system_config_0 |= IQS5XX_REATI | IQS5XX_ALP_REATI;
+        }
+        ret = iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONFIG_0, system_config_0);
+        if (ret < 0) {
+            LOG_ERR("Failed to configure system: %d", ret);
+            return ret;
+        }
     }
 
     // End communication window.
