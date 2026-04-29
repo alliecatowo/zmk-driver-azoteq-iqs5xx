@@ -192,11 +192,43 @@ struct iqs5xx_config {
     uint8_t xy_static_beta;
 };
 
+/* Captured chip register values for delayed diagnostic logging. Setup_device
+ * reads these BEFORE/AFTER its writes; they're logged later by the delayed
+ * diagnostic work after USB CDC has enumerated, so logs actually reach
+ * the host. */
+struct iqs5xx_diagnostic_state {
+    bool ready;
+    /* Pre-write NVD snapshot. */
+    uint16_t pre_product_number;
+    uint16_t pre_project_number;
+    uint8_t pre_major_version;
+    uint8_t pre_minor_version;
+    uint16_t pre_x_resolution;
+    uint16_t pre_y_resolution;
+    uint8_t pre_filter_settings;
+    uint8_t pre_xy_static_beta;
+    uint8_t pre_bottom_beta;
+    uint8_t pre_lower_speed;
+    uint16_t pre_upper_speed;
+    uint8_t pre_idle_mode_timeout;
+    uint8_t pre_system_config_0;
+    uint8_t pre_xy_config_0;
+    /* Post-write snapshot. */
+    uint16_t post_x_resolution;
+    uint16_t post_y_resolution;
+    uint8_t post_xy_static_beta;
+    uint8_t post_idle_mode_timeout;
+    uint8_t post_system_config_0;
+    uint8_t post_xy_config_0;
+};
+
 struct iqs5xx_data {
     const struct device *dev;
     struct gpio_callback rdy_cb;
     struct k_work work;
     struct k_work_delayable button_release_work;
+    struct k_work_delayable diagnostic_work;
+    struct iqs5xx_diagnostic_state diag;
     // TODO: Pack flags into a bitfield to save space.
     bool initialized;
     // Flag to indicate if the button was pressed in a previous cycle.

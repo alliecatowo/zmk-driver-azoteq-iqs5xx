@@ -364,58 +364,29 @@ static int iqs5xx_setup_device(const struct device *dev) {
     k_msleep(10);
 
     /*
-     * READ-ONLY NVD DIAGNOSTIC — dumps chip's pre-write state with retry
-     * (chip's first I2C transaction after ACK_RESET often NACKs as the
-     * comm window finishes closing; retry handles this). 50ms settle
-     * delay before any reads gives the chip's ATI a chance to start.
+     * READ-ONLY NVD DIAGNOSTIC — captures chip's pre-write state into
+     * data->diag for later logging by the delayed diagnostic work.
+     * USB CDC isn't enumerated yet at this point, so direct LOG_INF
+     * here would be lost; we defer logging to ~3s post-init.
      */
     k_msleep(50);
     {
-        uint8_t r8 = 0;
-        uint16_t r16 = 0;
-        LOG_INF("=== Pre-write NVD readback ===");
-        if (iqs5xx_read_reg16_with_retry(dev, 0x0000, &r16) == 0) {
-            LOG_INF("PRODUCT_NUMBER (0x0000) = %u", r16);
-        }
-        if (iqs5xx_read_reg16_with_retry(dev, 0x0002, &r16) == 0) {
-            LOG_INF("PROJECT_NUMBER (0x0002) = %u", r16);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0004, &r8) == 0) {
-            LOG_INF("MAJOR_VERSION (0x0004) = %u", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0005, &r8) == 0) {
-            LOG_INF("MINOR_VERSION (0x0005) = %u", r8);
-        }
-        if (iqs5xx_read_reg16_with_retry(dev, 0x066E, &r16) == 0) {
-            LOG_INF("NVD X_RESOLUTION (0x066E) = %u", r16);
-        }
-        if (iqs5xx_read_reg16_with_retry(dev, 0x0670, &r16) == 0) {
-            LOG_INF("NVD Y_RESOLUTION (0x0670) = %u", r16);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0632, &r8) == 0) {
-            LOG_INF("NVD FILTER_SETTINGS (0x0632) = 0x%02x", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0633, &r8) == 0) {
-            LOG_INF("NVD XY_STATIC_BETA (0x0633) = %u", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0637, &r8) == 0) {
-            LOG_INF("NVD BOTTOM_BETA (0x0637) = %u", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0638, &r8) == 0) {
-            LOG_INF("NVD LOWER_SPEED (0x0638) = %u", r8);
-        }
-        if (iqs5xx_read_reg16_with_retry(dev, 0x0639, &r16) == 0) {
-            LOG_INF("NVD UPPER_SPEED (0x0639) = %u", r16);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0586, &r8) == 0) {
-            LOG_INF("NVD IDLE_MODE_TIMEOUT (0x0586) = %u", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &r8) == 0) {
-            LOG_INF("NVD SYSTEM_CONFIG_0 (0x058E) = 0x%02x", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, IQS5XX_XY_CONFIG_0, &r8) == 0) {
-            LOG_INF("NVD XY_CONFIG_0 (0x0669) = 0x%02x", r8);
-        }
+        struct iqs5xx_data *data = dev->data;
+        struct iqs5xx_diagnostic_state *d = &data->diag;
+        iqs5xx_read_reg16_with_retry(dev, 0x0000, &d->pre_product_number);
+        iqs5xx_read_reg16_with_retry(dev, 0x0002, &d->pre_project_number);
+        iqs5xx_read_reg8_with_retry(dev, 0x0004, &d->pre_major_version);
+        iqs5xx_read_reg8_with_retry(dev, 0x0005, &d->pre_minor_version);
+        iqs5xx_read_reg16_with_retry(dev, 0x066E, &d->pre_x_resolution);
+        iqs5xx_read_reg16_with_retry(dev, 0x0670, &d->pre_y_resolution);
+        iqs5xx_read_reg8_with_retry(dev, 0x0632, &d->pre_filter_settings);
+        iqs5xx_read_reg8_with_retry(dev, 0x0633, &d->pre_xy_static_beta);
+        iqs5xx_read_reg8_with_retry(dev, 0x0637, &d->pre_bottom_beta);
+        iqs5xx_read_reg8_with_retry(dev, 0x0638, &d->pre_lower_speed);
+        iqs5xx_read_reg16_with_retry(dev, 0x0639, &d->pre_upper_speed);
+        iqs5xx_read_reg8_with_retry(dev, 0x0586, &d->pre_idle_mode_timeout);
+        iqs5xx_read_reg8_with_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &d->pre_system_config_0);
+        iqs5xx_read_reg8_with_retry(dev, IQS5XX_XY_CONFIG_0, &d->pre_xy_config_0);
     }
 
     // Clear SETUP_COMPLETE before any other config writes.
@@ -580,38 +551,62 @@ static int iqs5xx_setup_device(const struct device *dev) {
     }
 
     /*
-     * POST-WRITE diagnostic readback. Confirms which writes actually
-     * stuck on the chip vs what the chip reverted or clamped. Critical
-     * for diagnosing whether resolution writes (when we add them) stick
-     * or get clamped to chip's actual capability.
+     * POST-WRITE readback — captures into data->diag for delayed log.
      */
     k_msleep(20);
     {
-        uint8_t r8 = 0;
-        uint16_t r16 = 0;
-        LOG_INF("=== Post-write readback ===");
-        if (iqs5xx_read_reg16_with_retry(dev, 0x066E, &r16) == 0) {
-            LOG_INF("X_RESOLUTION (0x066E) = %u", r16);
-        }
-        if (iqs5xx_read_reg16_with_retry(dev, 0x0670, &r16) == 0) {
-            LOG_INF("Y_RESOLUTION (0x0670) = %u", r16);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0633, &r8) == 0) {
-            LOG_INF("XY_STATIC_BETA (0x0633) = %u", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, 0x0586, &r8) == 0) {
-            LOG_INF("IDLE_MODE_TIMEOUT (0x0586) = %u", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &r8) == 0) {
-            LOG_INF("SYSTEM_CONFIG_0 (0x058E) = 0x%02x", r8);
-        }
-        if (iqs5xx_read_reg8_with_retry(dev, IQS5XX_XY_CONFIG_0, &r8) == 0) {
-            LOG_INF("XY_CONFIG_0 (0x0669) = 0x%02x", r8);
-        }
+        struct iqs5xx_data *data = dev->data;
+        struct iqs5xx_diagnostic_state *d = &data->diag;
+        iqs5xx_read_reg16_with_retry(dev, 0x066E, &d->post_x_resolution);
+        iqs5xx_read_reg16_with_retry(dev, 0x0670, &d->post_y_resolution);
+        iqs5xx_read_reg8_with_retry(dev, 0x0633, &d->post_xy_static_beta);
+        iqs5xx_read_reg8_with_retry(dev, 0x0586, &d->post_idle_mode_timeout);
+        iqs5xx_read_reg8_with_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &d->post_system_config_0);
+        iqs5xx_read_reg8_with_retry(dev, IQS5XX_XY_CONFIG_0, &d->post_xy_config_0);
         iqs5xx_end_comm_window(dev);
+        d->ready = true;
     }
 
     return 0;
+}
+
+/*
+ * Delayed diagnostic logger. Fires ~3s after init, by which time USB CDC
+ * is enumerated and any host-side log capture (cat) is connected. Prints
+ * the snapshot taken during setup_device.
+ */
+static void iqs5xx_diagnostic_work_handler(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct iqs5xx_data *data = CONTAINER_OF(dwork, struct iqs5xx_data, diagnostic_work);
+    struct iqs5xx_diagnostic_state *d = &data->diag;
+
+    if (!d->ready) {
+        LOG_WRN("Diagnostic state not ready");
+        return;
+    }
+
+    LOG_INF("=== IQS5xx PRE-WRITE NVD readback ===");
+    LOG_INF("PRODUCT_NUMBER (0x0000) = %u", d->pre_product_number);
+    LOG_INF("PROJECT_NUMBER (0x0002) = %u", d->pre_project_number);
+    LOG_INF("VERSION (0x0004/0x0005) = %u.%u", d->pre_major_version, d->pre_minor_version);
+    LOG_INF("X_RESOLUTION (0x066E) = %u", d->pre_x_resolution);
+    LOG_INF("Y_RESOLUTION (0x0670) = %u", d->pre_y_resolution);
+    LOG_INF("FILTER_SETTINGS (0x0632) = 0x%02x", d->pre_filter_settings);
+    LOG_INF("XY_STATIC_BETA (0x0633) = %u", d->pre_xy_static_beta);
+    LOG_INF("BOTTOM_BETA (0x0637) = %u", d->pre_bottom_beta);
+    LOG_INF("LOWER_SPEED (0x0638) = %u", d->pre_lower_speed);
+    LOG_INF("UPPER_SPEED (0x0639) = %u", d->pre_upper_speed);
+    LOG_INF("IDLE_MODE_TIMEOUT (0x0586) = %u", d->pre_idle_mode_timeout);
+    LOG_INF("SYSTEM_CONFIG_0 (0x058E) = 0x%02x", d->pre_system_config_0);
+    LOG_INF("XY_CONFIG_0 (0x0669) = 0x%02x", d->pre_xy_config_0);
+    LOG_INF("=== IQS5xx POST-WRITE readback ===");
+    LOG_INF("X_RESOLUTION = %u (was %u)", d->post_x_resolution, d->pre_x_resolution);
+    LOG_INF("Y_RESOLUTION = %u (was %u)", d->post_y_resolution, d->pre_y_resolution);
+    LOG_INF("XY_STATIC_BETA = %u (was %u)", d->post_xy_static_beta, d->pre_xy_static_beta);
+    LOG_INF("IDLE_MODE_TIMEOUT = %u (was %u)", d->post_idle_mode_timeout, d->pre_idle_mode_timeout);
+    LOG_INF("SYSTEM_CONFIG_0 = 0x%02x (was 0x%02x)", d->post_system_config_0, d->pre_system_config_0);
+    LOG_INF("XY_CONFIG_0 = 0x%02x (was 0x%02x)", d->post_xy_config_0, d->pre_xy_config_0);
+    LOG_INF("=== END diagnostic ===");
 }
 
 static int iqs5xx_init(const struct device *dev) {
@@ -627,6 +622,7 @@ static int iqs5xx_init(const struct device *dev) {
     data->dev = dev;
     k_work_init(&data->work, iqs5xx_work_handler);
     k_work_init_delayable(&data->button_release_work, iqs5xx_button_release_work_handler);
+    k_work_init_delayable(&data->diagnostic_work, iqs5xx_diagnostic_work_handler);
 
     // Configure reset GPIO if available.
     if (config->reset_gpio.port) {
@@ -694,6 +690,11 @@ static int iqs5xx_init(const struct device *dev) {
 
     data->initialized = true;
     LOG_INF("IQS5xx trackpad initialized");
+
+    /* Schedule diagnostic dump 3s out — by then USB CDC has enumerated
+     * and any host-side log capture is connected, so the snapshot we
+     * took during setup_device actually reaches the host. */
+    k_work_schedule(&data->diagnostic_work, K_SECONDS(3));
 
     return 0;
 }
