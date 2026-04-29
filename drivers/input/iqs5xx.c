@@ -423,6 +423,29 @@ static int iqs5xx_setup_device(const struct device *dev) {
         }
     }
 
+    /* Output coordinate resolution. Critical for sub-pixel feel: chip's
+     * internal 256-pt-between-electrodes precision is rounded to integer
+     * REL deltas at the configured resolution before being emitted. Set
+     * to chip native max (IQS572 = 2048 × 1792 for the TPS43) to preserve
+     * all available precision. Without explicit write the chip uses NVD
+     * which may have been tuned for a different host config. Symptom of
+     * a too-low resolution: finger motion produces chunky deltas, minute
+     * movements get lost in rounding ("moves in blocks" feel). */
+    if (config->x_resolution > 0) {
+        ret = iqs5xx_write_reg16(dev, IQS5XX_X_RESOLUTION, config->x_resolution);
+        if (ret < 0) {
+            LOG_ERR("Failed to set X resolution: %d", ret);
+            return ret;
+        }
+    }
+    if (config->y_resolution > 0) {
+        ret = iqs5xx_write_reg16(dev, IQS5XX_Y_RESOLUTION, config->y_resolution);
+        if (ret < 0) {
+            LOG_ERR("Failed to set Y resolution: %d", ret);
+            return ret;
+        }
+    }
+
     uint8_t single_finger_gestures = 0;
     single_finger_gestures |= config->one_finger_tap ? IQS5XX_SINGLE_TAP : 0;
     single_finger_gestures |= config->press_and_hold ? IQS5XX_PRESS_AND_HOLD : 0;
@@ -596,6 +619,8 @@ static int iqs5xx_init(const struct device *dev) {
         .disable_idle_timeout = DT_INST_PROP_OR(n, disable_idle_timeout, true),                    \
         .palm_reject = DT_INST_PROP_OR(n, palm_reject, true),                                      \
         .reati = DT_INST_PROP_OR(n, reati, true),                                                  \
+        .x_resolution = DT_INST_PROP_OR(n, x_resolution, 2048),                                    \
+        .y_resolution = DT_INST_PROP_OR(n, y_resolution, 1792),                                    \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, iqs5xx_init, NULL, &iqs5xx_data_##n, &iqs5xx_config_##n, POST_KERNEL, \
                           CONFIG_INPUT_INIT_PRIORITY, NULL);

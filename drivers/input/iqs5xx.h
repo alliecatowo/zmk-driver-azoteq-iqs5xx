@@ -26,6 +26,21 @@
  * discontinuities at slow-drag start (chip sleeping between samples). */
 #define IQS5XX_IDLE_MODE_TIMEOUT 0x0586
 
+/* X / Y resolution registers (uint16 big-endian). Datasheet §5.4 — these
+ * set the COORDINATE OUTPUT SCALE: "the total X and total Y output range
+ * across the complete trackpad." The chip uses 256 sub-points between each
+ * physical electrode internally; the configured resolution determines how
+ * much of that internal precision survives into the emitted REL deltas.
+ *
+ * IQS572 (TPS43 die) maximum: 2048 × 1792. Setting these explicitly to max
+ * preserves all available sub-pixel precision in REL output — without it,
+ * the chip rounds internally before emitting and minute finger motion is
+ * lost ("moves in blocks" feel). Holykeebs QMK writes these at init; Linux
+ * reads them from chip NVD. We write them explicitly to avoid relying on
+ * chip-NVD-tuned-for-something-else. */
+#define IQS5XX_X_RESOLUTION 0x066E
+#define IQS5XX_Y_RESOLUTION 0x0670
+
 #define IQS5XX_END_COMM_WINDOW 0xEEEE
 
 #define IQS5XX_SYSTEM_CONTROL_0 0x0431
@@ -173,6 +188,11 @@ struct iqs5xx_config {
 
     // Enable autonomous Re-ATI calibration (SYSTEM_CONFIG_0 bits 2 + 3).
     bool reati;
+
+    // Output coordinate resolution (0 = leave at chip NVD default).
+    // IQS572 native max: 2048 × 1792. Higher = finer sub-pixel REL deltas.
+    uint16_t x_resolution;
+    uint16_t y_resolution;
 };
 
 struct iqs5xx_data {

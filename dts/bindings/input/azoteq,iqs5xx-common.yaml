@@ -116,3 +116,21 @@ properties:
       while a finger is present — symptom is "long touches gradually lose
       sensitivity until release." Datasheet §3.7.2.
       Default true (matches Linux mainline + QMK upstream behavior).
+
+  x-resolution:
+    type: int
+    description: |
+      X-axis output coordinate resolution (register 0x066E, 16-bit). Datasheet
+      §5.4 — total X output range across the complete trackpad. Chip's internal
+      256-pt-between-electrodes precision is rounded to integer REL deltas at
+      this resolution before emission. Higher = finer sub-pixel deltas =
+      smoother slow-motion feel.
+      IQS572 (TPS43) native max: 2048. Set to 0 to leave at chip NVD default.
+    default: 2048
+
+  y-resolution:
+    type: int
+    description: |
+      Y-axis output coordinate resolution (register 0x0670, 16-bit).
+      IQS572 (TPS43) native max: 1792. Set to 0 to leave at chip NVD default.
+    default: 1792
