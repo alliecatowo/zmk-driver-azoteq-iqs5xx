@@ -14,6 +14,17 @@
 /* Active mode report rate (uint16, ms). Chip default 10 = 100Hz. Lowering
  * to 5-7 ms gives 140-200Hz for smoother tracking under fast motion. */
 #define IQS5XX_REPORT_RATE_ACTIVE 0x057A
+/* Idle-touch report rate (uint16, ms). Chip uses this when finger is
+ * stationary on the pad. Match active rate to avoid filter-state
+ * discontinuity when transitioning. */
+#define IQS5XX_REPORT_RATE_IDLE_TOUCH 0x057C
+/* Idle report rate (uint16, ms). Chip uses this when no finger present. */
+#define IQS5XX_REPORT_RATE_IDLE 0x057E
+/* Idle-mode timeout (uint8, seconds). 0xFF = never enter LP1/LP2 — datasheet
+ * §4.2: "A timeout value of 255 will result in a 'never' timeout condition."
+ * Set to 0xFF to keep the chip in active/idle and prevent filter-reset
+ * discontinuities at slow-drag start (chip sleeping between samples). */
+#define IQS5XX_IDLE_MODE_TIMEOUT 0x0586
 
 #define IQS5XX_END_COMM_WINDOW 0xEEEE
 
@@ -114,6 +125,11 @@
 #define IQS5XX_FLIP_X BIT(0)
 #define IQS5XX_FLIP_Y BIT(1)
 #define IQS5XX_SWITCH_XY_AXIS BIT(2)
+/* Palm reject: when set, chip suppresses XY output for any contact whose
+ * area exceeds the palm reject threshold (register 0x066B). Datasheet
+ * §5.5 — improves slow-drag and resting-finger feel by filtering out
+ * incidental edge/palm contact that would otherwise emit phantom events. */
+#define IQS5XX_PALM_REJECT BIT(3)
 
 struct iqs5xx_config {
     struct i2c_dt_spec i2c;
@@ -137,11 +153,26 @@ struct iqs5xx_config {
     bool flip_y;
 
     // Sensitivity. configuration.
+    // (Deprecated: bottom_beta and stationary_threshold writes were removed
+    //  in the world-class-feel-tier0 patch. Linux/QMK/holykeebs all leave
+    //  these registers at chip-NVD defaults from Azoteq's GUI. Properties
+    //  retained in the binding for backwards compat but not written.)
     uint8_t bottom_beta;
     uint8_t stationary_threshold;
 
-    // Active-mode report rate in ms; 0 = leave chip at default.
+    // Report rates in ms. 0 = leave chip at default.
     uint16_t report_rate_active_ms;
+    uint16_t report_rate_idle_touch_ms;
+    uint16_t report_rate_idle_ms;
+
+    // Disable LP1/LP2 sleep transitions (writes 0xFF to IDLE_MODE_TIMEOUT).
+    bool disable_idle_timeout;
+
+    // Enable chip-side palm rejection (XY_CONFIG_0 bit 3).
+    bool palm_reject;
+
+    // Enable autonomous Re-ATI calibration (SYSTEM_CONFIG_0 bits 2 + 3).
+    bool reati;
 };
 
 struct iqs5xx_data {

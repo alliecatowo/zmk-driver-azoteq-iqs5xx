@@ -72,3 +72,47 @@ properties:
       chip at whatever it last had. 5ms (200Hz) is the practical floor for the
       IQS572 — going faster risks the chip not finishing its sense cycle in time.
     default: 10
+
+  report-rate-idle-touch-ms:
+    type: int
+    description: |
+      Idle-touch report rate (register 0x057C). Used by the chip when finger
+      is stationary on the pad. Set equal to active rate to avoid filter
+      discontinuity when finger transitions between moving and resting.
+      Set to 0 to leave at chip default.
+    default: 10
+
+  report-rate-idle-ms:
+    type: int
+    description: |
+      Idle-mode report rate (register 0x057E). Used when no finger present.
+      Match active rate to keep the chip ready for first-touch responsiveness.
+      Set to 0 to leave at chip default.
+    default: 10
+
+  disable-idle-timeout:
+    type: boolean
+    description: |
+      When true, writes 0xFF to IDLE_MODE_TIMEOUT (register 0x0586) which
+      datasheet §4.2 specifies as "never timeout" — chip stays in active/idle
+      modes and never enters LP1/LP2 sleep states. Prevents filter-state
+      discontinuity that surfaces as "first touch after pause feels sluggish."
+      Default true (matches QMK upstream / holykeebs behavior).
+
+  palm-reject:
+    type: boolean
+    description: |
+      Enable chip-side palm rejection (XY_CONFIG_0 bit 3 / register 0x0669).
+      When set, chip suppresses XY output for any contact whose touch area
+      exceeds the palm-reject threshold (register 0x066B). Datasheet §5.5.
+      Default true (matches QMK upstream / holykeebs behavior).
+
+  reati:
+    type: boolean
+    description: |
+      Enable autonomous Re-ATI (capacitive baseline recalibration) on the
+      trackpad and ALP channels. SYSTEM_CONFIG_0 bits 2 and 3 (REATI +
+      ALP_REATI). Without this, chip does not re-calibrate baseline drift
+      while a finger is present — symptom is "long touches gradually lose
+      sensitivity until release." Datasheet §3.7.2.
+      Default true (matches Linux mainline + QMK upstream behavior).

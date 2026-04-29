@@ -366,17 +366,27 @@ static int iqs5xx_setup_device(const struct device *dev) {
         return ret;
     }
 
-    ret = iqs5xx_write_reg8(dev, IQS5XX_BOTTOM_BETA, config->bottom_beta);
-    if (ret < 0) {
-        LOG_ERR("Failed to set bottom beta: %d", ret);
-        return ret;
-    }
-
-    ret = iqs5xx_write_reg8(dev, IQS5XX_STATIONARY_THRESH, config->stationary_threshold);
-    if (ret < 0) {
-        LOG_ERR("Failed to set bottom stationary threshold: %d", ret);
-        return ret;
-    }
+    /*
+     * Filter configuration registers (BOTTOM_BETA 0x0637, STATIONARY_THRESH
+     * 0x0672, FILTER_SETTINGS 0x0632) are intentionally NOT written here.
+     *
+     * Per Azoteq IQS5xx-B000 datasheet §5.9, the dynamic IIR filter uses
+     * register 0x0633 (XY_static_beta) as the MAX-filtering beta at slow
+     * speeds — not 0x0637. Setting only BOTTOM_BETA without also writing
+     * 0x0633, LOWER_SPEED (0x0638), and UPPER_SPEED (0x0639) puts the chip
+     * into a half-configured dynamic-IIR state with undefined behavior at
+     * low speeds (POR for 0x0633 is undocumented; likely 0 = no filter).
+     * That is the root cause of the slow-drag jitter symptom we observed.
+     *
+     * Linux mainline iqs5xx.c, holykeebs QMK driver, and QMK upstream all
+     * write zero filter registers — they trust the chip's NVD-baked tuning
+     * from Azoteq's ConfigTool GUI shipped on the TPS43 module. We do the
+     * same. If we ever need explicit filter control, write the full set
+     * coherently per datasheet, not this partial config.
+     *
+     * See: INVESTIGATION-iqs5xx-feel.md in the parent zmk-corne repo for
+     * the full research synthesis.
+     */
 
     /* Active-mode report rate. Skipped when 0 to preserve chip default. */
     if (config->report_rate_active_ms > 0) {
@@ -386,18 +396,31 @@ static int iqs5xx_setup_device(const struct device *dev) {
             return ret;
         }
     }
+    if (config->report_rate_idle_touch_ms > 0) {
+        ret = iqs5xx_write_reg16(dev, IQS5XX_REPORT_RATE_IDLE_TOUCH,
+                                 config->report_rate_idle_touch_ms);
+        if (ret < 0) {
+            LOG_ERR("Failed to set idle-touch report rate: %d", ret);
+            return ret;
+        }
+    }
+    if (config->report_rate_idle_ms > 0) {
+        ret = iqs5xx_write_reg16(dev, IQS5XX_REPORT_RATE_IDLE, config->report_rate_idle_ms);
+        if (ret < 0) {
+            LOG_ERR("Failed to set idle report rate: %d", ret);
+            return ret;
+        }
+    }
 
-    // TODO: Expose these through dts bindings.
-    // Set filter settings with:
-    // - IIR filter enabled
-    // - MAV filter enabled
-    // - IIR select disabled (dynamic IIR)
-    // - ALP count filter enabled
-    ret = iqs5xx_write_reg8(dev, IQS5XX_FILTER_SETTINGS,
-                            IQS5XX_IIR_FILTER | IQS5XX_MAV_FILTER | IQS5XX_ALP_COUNT_FILTER);
-    if (ret < 0) {
-        LOG_ERR("Failed to configure filter settings: %d", ret);
-        return ret;
+    /* Disable LP1/LP2 sleep transitions when configured. Datasheet §4.2:
+     * 0xFF = never timeout. Prevents filter-state discontinuity that
+     * surfaces as a "first-touch is sluggish" feel after the chip wakes. */
+    if (config->disable_idle_timeout) {
+        ret = iqs5xx_write_reg8(dev, IQS5XX_IDLE_MODE_TIMEOUT, 0xFF);
+        if (ret < 0) {
+            LOG_ERR("Failed to disable idle timeout: %d", ret);
+            return ret;
+        }
     }
 
     uint8_t single_finger_gestures = 0;
@@ -432,14 +455,23 @@ static int iqs5xx_setup_device(const struct device *dev) {
     xy_config |= config->flip_x ? IQS5XX_FLIP_X : 0;
     xy_config |= config->flip_y ? IQS5XX_FLIP_Y : 0;
     xy_config |= config->switch_xy ? IQS5XX_SWITCH_XY_AXIS : 0;
+    xy_config |= config->palm_reject ? IQS5XX_PALM_REJECT : 0;
     ret = iqs5xx_write_reg8(dev, IQS5XX_XY_CONFIG_0, xy_config);
     if (ret < 0) {
         LOG_ERR("Failed to configure axes: %d", ret);
         return ret;
     }
 
-    // Configure system settings.
-    ret = iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONFIG_0, IQS5XX_SETUP_COMPLETE | IQS5XX_WDT);
+    /* Final SYSTEM_CONFIG_0 write. SETUP_COMPLETE + WDT always; REATI +
+     * ALP_REATI when configured (default true). Linux/QMK both enable
+     * REATI — chip won't autonomously re-calibrate baseline drift without
+     * these bits, which produces the "slow-drag drifts to silence" symptom
+     * over long touches. */
+    uint8_t system_config_0 = IQS5XX_SETUP_COMPLETE | IQS5XX_WDT;
+    if (config->reati) {
+        system_config_0 |= IQS5XX_REATI | IQS5XX_ALP_REATI;
+    }
+    ret = iqs5xx_write_reg8(dev, IQS5XX_SYSTEM_CONFIG_0, system_config_0);
     if (ret < 0) {
         LOG_ERR("Failed to configure system: %d", ret);
         return ret;
@@ -559,6 +591,11 @@ static int iqs5xx_init(const struct device *dev) {
         .bottom_beta = DT_INST_PROP_OR(n, bottom_beta, 5),                                         \
         .stationary_threshold = DT_INST_PROP_OR(n, stationary_threshold, 5),                       \
         .report_rate_active_ms = DT_INST_PROP_OR(n, report_rate_active_ms, 10),                    \
+        .report_rate_idle_touch_ms = DT_INST_PROP_OR(n, report_rate_idle_touch_ms, 10),            \
+        .report_rate_idle_ms = DT_INST_PROP_OR(n, report_rate_idle_ms, 10),                        \
+        .disable_idle_timeout = DT_INST_PROP_OR(n, disable_idle_timeout, true),                    \
+        .palm_reject = DT_INST_PROP_OR(n, palm_reject, true),                                      \
+        .reati = DT_INST_PROP_OR(n, reati, true),                                                  \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, iqs5xx_init, NULL, &iqs5xx_data_##n, &iqs5xx_config_##n, POST_KERNEL, \
                           CONFIG_INPUT_INIT_PRIORITY, NULL);
