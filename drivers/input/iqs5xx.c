@@ -90,9 +90,14 @@ static int iqs5xx_read_reg8(const struct device *dev, uint16_t reg, uint8_t *val
     return i2c_write_read_dt(&config->i2c, reg_buf, sizeof(reg_buf), val, 1);
 }
 
-/* Retry-enabled read helpers for diagnostic use only. */
+/* Retry-enabled read helpers for diagnostic use only. Adds 500us pre-delay
+ * to give chip's I2C bus recovery time between consecutive transactions
+ * (datasheet §8.8.2: minimum 150us after STOP before next addressing).
+ * Without this delay we observed strict alternating-success: every other
+ * read would silently NACK or return wrong data. */
 static int iqs5xx_read_reg8_retry(const struct device *dev, uint16_t reg, uint8_t *val) {
     int ret;
+    k_usleep(500);
     for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
         ret = iqs5xx_read_reg8(dev, reg, val);
         if (ret == 0) return 0;
@@ -102,6 +107,7 @@ static int iqs5xx_read_reg8_retry(const struct device *dev, uint16_t reg, uint8_
 }
 static int iqs5xx_read_reg16_retry(const struct device *dev, uint16_t reg, uint16_t *val) {
     int ret;
+    k_usleep(500);
     for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
         ret = iqs5xx_read_reg16(dev, reg, val);
         if (ret == 0) return 0;
