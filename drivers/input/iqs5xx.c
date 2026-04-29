@@ -356,6 +356,19 @@ static int iqs5xx_setup_device(const struct device *dev) {
     }
     k_msleep(10);
 
+    /* Extend I2C comm-window timeout to 255ms (max). Datasheet §8.6:
+     * if comm window isn't serviced within this time, chip auto-closes
+     * window and continues processing. Default is short — our setup
+     * with diagnostic reads exceeds it, causing window-close mid-setup
+     * and subsequent reads to land in different chip states (returning
+     * stale or zero values for some addresses). 255ms is more than
+     * enough for any setup we do. */
+    ret = iqs5xx_write_reg8(dev, 0x058A, 0xFF);
+    if (ret < 0) {
+        LOG_ERR("Failed to extend I2C timeout: %d", ret);
+        /* not fatal — continue */
+    }
+
     // Clear SETUP_COMPLETE before any other config writes.
     //
     // The IQS5xx series treats register writes as advisory once SETUP_COMPLETE
