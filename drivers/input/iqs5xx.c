@@ -90,31 +90,7 @@ static int iqs5xx_read_reg8(const struct device *dev, uint16_t reg, uint8_t *val
     return i2c_write_read_dt(&config->i2c, reg_buf, sizeof(reg_buf), val, 1);
 }
 
-/* Retry-enabled read helpers for diagnostic use only. Adds 500us pre-delay
- * to give chip's I2C bus recovery time between consecutive transactions
- * (datasheet §8.8.2: minimum 150us after STOP before next addressing).
- * Without this delay we observed strict alternating-success: every other
- * read would silently NACK or return wrong data. */
-static int iqs5xx_read_reg8_retry(const struct device *dev, uint16_t reg, uint8_t *val) {
-    int ret;
-    k_usleep(500);
-    for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
-        ret = iqs5xx_read_reg8(dev, reg, val);
-        if (ret == 0) return 0;
-        k_usleep(IQS5XX_I2C_RETRY_BACKOFF_US);
-    }
-    return ret;
-}
-static int iqs5xx_read_reg16_retry(const struct device *dev, uint16_t reg, uint16_t *val) {
-    int ret;
-    k_usleep(500);
-    for (int i = 0; i < IQS5XX_I2C_RETRIES; i++) {
-        ret = iqs5xx_read_reg16(dev, reg, val);
-        if (ret == 0) return 0;
-        k_usleep(IQS5XX_I2C_RETRY_BACKOFF_US);
-    }
-    return ret;
-}
+/* No more individual read retries — we use burst reads instead. */
 
 /*
  * Burst read N bytes starting at `reg`. The IQS5xx auto-increments the
@@ -502,42 +478,63 @@ static int iqs5xx_setup_device(const struct device *dev) {
     }
 
     /*
-     * COMPREHENSIVE DIAGNOSTIC SNAPSHOT — capture chip register state into
-     * data->diag for delayed logging by iqs5xx_diagnostic_work_handler.
-     * Reads happen inside the still-open comm window. Read-only — no chip
-     * state changes from this block. All reads use retry helpers.
+     * COMPREHENSIVE DIAGNOSTIC SNAPSHOT via BURST READS.
+     * Individual reads alternate-fail due to inter-transaction timing
+     * issues with the chip's I2C protocol. Burst reads (single transaction
+     * with auto-increment per datasheet §8.4) avoid the issue entirely —
+     * one START, one address-write, one RESTART, then N bytes back.
      *
-     * Register addresses verified against IQS5xx-B000 datasheet rev 2.1
-     * §8.9 memory map.
+     * Three burst regions cover all interesting registers:
+     *  - 0x0000..0x000B  (chip ID: PRODUCT, PROJECT, MAJOR, MINOR + 8 bytes)
+     *  - 0x0584..0x058F  (mode timeouts + system configs, 12 bytes)
+     *  - 0x0632..0x063A  (filter + channel-related, 9 bytes; partial)
+     *  - 0x065A..0x0672  (RxToTx + XY config + resolution + palm + station, 25 bytes)
      */
     {
         struct iqs5xx_data *data = dev->data;
         struct iqs5xx_diagnostic_state *d = &data->diag;
-        iqs5xx_read_reg16_retry(dev, 0x0000, &d->product_number);
-        iqs5xx_read_reg16_retry(dev, 0x0002, &d->project_number);
-        iqs5xx_read_reg8_retry(dev, 0x0004, &d->major_version);
-        iqs5xx_read_reg8_retry(dev, 0x0005, &d->minor_version);
-        iqs5xx_read_reg8_retry(dev, 0x063D, &d->total_rx);
-        iqs5xx_read_reg8_retry(dev, 0x063E, &d->total_tx);
-        iqs5xx_read_reg8_retry(dev, 0x065D, &d->rx_to_tx);
-        iqs5xx_read_reg16_retry(dev, 0x066E, &d->x_resolution);
-        iqs5xx_read_reg16_retry(dev, 0x0670, &d->y_resolution);
-        iqs5xx_read_reg8_retry(dev, 0x0632, &d->filter_settings);
-        iqs5xx_read_reg8_retry(dev, 0x0633, &d->xy_static_beta);
-        iqs5xx_read_reg8_retry(dev, 0x0637, &d->bottom_beta);
-        iqs5xx_read_reg8_retry(dev, 0x0638, &d->lower_speed);
-        iqs5xx_read_reg16_retry(dev, 0x0639, &d->upper_speed);
-        iqs5xx_read_reg8_retry(dev, 0x0672, &d->stationary_threshold);
-        iqs5xx_read_reg8_retry(dev, 0x066A, &d->max_multi_touches);
-        iqs5xx_read_reg8_retry(dev, 0x066B, &d->finger_split);
-        iqs5xx_read_reg8_retry(dev, 0x066C, &d->palm_reject_threshold);
-        iqs5xx_read_reg8_retry(dev, 0x066D, &d->palm_reject_timeout);
-        iqs5xx_read_reg8_retry(dev, 0x0584, &d->active_mode_timeout);
-        iqs5xx_read_reg8_retry(dev, 0x0585, &d->idle_touch_timeout);
-        iqs5xx_read_reg8_retry(dev, 0x0586, &d->idle_mode_timeout);
-        iqs5xx_read_reg8_retry(dev, IQS5XX_SYSTEM_CONFIG_0, &d->system_config_0);
-        iqs5xx_read_reg8_retry(dev, IQS5XX_SYSTEM_CONFIG_1, &d->system_config_1);
-        iqs5xx_read_reg8_retry(dev, IQS5XX_XY_CONFIG_0, &d->xy_config_0);
+        uint8_t b1[12], b2[12], b3[20], b4[25];
+
+        if (iqs5xx_read_burst(dev, 0x0000, b1, sizeof(b1)) == 0) {
+            d->product_number = (b1[0] << 8) | b1[1];
+            d->project_number = (b1[2] << 8) | b1[3];
+            d->major_version = b1[4];
+            d->minor_version = b1[5];
+        }
+        if (iqs5xx_read_burst(dev, 0x0584, b2, sizeof(b2)) == 0) {
+            d->active_mode_timeout = b2[0];   /* 0x0584 */
+            d->idle_touch_timeout = b2[1];    /* 0x0585 */
+            d->idle_mode_timeout = b2[2];     /* 0x0586 */
+            /* b2[3]=LP1 timeout, b2[4]=LP2 timeout, b2[5]=Snap timeout */
+            /* b2[6]=I2C timeout, b2[7..9] = open */
+            d->system_config_0 = b2[10];      /* 0x058E */
+            d->system_config_1 = b2[11];      /* 0x058F */
+        }
+        if (iqs5xx_read_burst(dev, 0x0632, b3, sizeof(b3)) == 0) {
+            d->filter_settings = b3[0];        /* 0x0632 */
+            d->xy_static_beta = b3[1];         /* 0x0633 */
+            /* b3[2..4] = ALP betas */
+            d->bottom_beta = b3[5];            /* 0x0637 */
+            d->lower_speed = b3[6];            /* 0x0638 */
+            d->upper_speed = (b3[7] << 8) | b3[8];  /* 0x0639-0x063A */
+            /* b3[9..10] = open */
+            d->total_rx = b3[11];              /* 0x063D */
+            d->total_tx = b3[12];              /* 0x063E */
+            /* b3[13..19] = Rx mapping bytes (first 7 of 10) */
+        }
+        if (iqs5xx_read_burst(dev, 0x065A, b4, sizeof(b4)) == 0) {
+            /* b4[0..2] = ALP_RX/TX selects */
+            d->rx_to_tx = b4[3];               /* 0x065D */
+            /* b4[4..14] = Hardware Settings A/B/C/D */
+            d->xy_config_0 = b4[15];           /* 0x0669 */
+            d->max_multi_touches = b4[16];     /* 0x066A */
+            d->finger_split = b4[17];          /* 0x066B */
+            d->palm_reject_threshold = b4[18]; /* 0x066C */
+            d->palm_reject_timeout = b4[19];   /* 0x066D */
+            d->x_resolution = (b4[20] << 8) | b4[21]; /* 0x066E-0x066F */
+            d->y_resolution = (b4[22] << 8) | b4[23]; /* 0x0670-0x0671 */
+            d->stationary_threshold = b4[24];  /* 0x0672 */
+        }
         d->ready = true;
     }
 
