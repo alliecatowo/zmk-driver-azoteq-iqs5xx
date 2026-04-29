@@ -26,6 +26,10 @@
  * discontinuities at slow-drag start (chip sleeping between samples). */
 #define IQS5XX_IDLE_MODE_TIMEOUT 0x0586
 
+/* Output coordinate resolution (uint16, datasheet §5.4). */
+#define IQS5XX_X_RESOLUTION 0x066E
+#define IQS5XX_Y_RESOLUTION 0x0670
+
 #define IQS5XX_END_COMM_WINDOW 0xEEEE
 
 #define IQS5XX_SYSTEM_CONTROL_0 0x0431
@@ -173,6 +177,10 @@ struct iqs5xx_config {
 
     // Enable autonomous Re-ATI calibration (SYSTEM_CONFIG_0 bits 2 + 3).
     bool reati;
+
+    // Output coordinate resolution. 0 = leave at chip NVD default.
+    uint16_t x_resolution;
+    uint16_t y_resolution;
 };
 
 /* Comprehensive diagnostic snapshot — captured during setup_device,

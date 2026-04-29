@@ -116,3 +116,19 @@ properties:
       while a finger is present — symptom is "long touches gradually lose
       sensitivity until release." Datasheet §3.7.2.
       Default true (matches Linux mainline + QMK upstream behavior).
+
+  x-resolution:
+    type: int
+    description: |
+      X-axis output coordinate resolution (register 0x066E). 0 = no write
+      (leave at NVD default). Datasheet §5.4 — chip output range across
+      the trackpad. Max for IQS572 die = 2048; actual ceiling is module-
+      specific (depends on PCB Rx wiring × 256).
+    default: 0
+
+  y-resolution:
+    type: int
+    description: |
+      Y-axis output coordinate resolution (register 0x0670). 0 = no write.
+      IQS572 die max = 1792; actual depends on Tx wiring × 256.
+    default: 0

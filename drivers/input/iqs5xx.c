@@ -477,6 +477,24 @@ static int iqs5xx_setup_device(const struct device *dev) {
         return ret;
     }
 
+    /* Resolution writes — DT-controlled. 0 = no write (leave at NVD).
+     * Writes happen in setup mode (SETUP_COMPLETE = 0); diagnostic
+     * burst-read below captures post-write state for verification. */
+    if (config->x_resolution > 0) {
+        ret = iqs5xx_write_reg16(dev, IQS5XX_X_RESOLUTION, config->x_resolution);
+        if (ret < 0) {
+            LOG_ERR("Failed to write X_RESOLUTION: %d", ret);
+            /* not fatal */
+        }
+    }
+    if (config->y_resolution > 0) {
+        ret = iqs5xx_write_reg16(dev, IQS5XX_Y_RESOLUTION, config->y_resolution);
+        if (ret < 0) {
+            LOG_ERR("Failed to write Y_RESOLUTION: %d", ret);
+            /* not fatal */
+        }
+    }
+
     /*
      * COMPREHENSIVE DIAGNOSTIC SNAPSHOT via BURST READS.
      * Individual reads alternate-fail due to inter-transaction timing
@@ -722,6 +740,8 @@ static int iqs5xx_init(const struct device *dev) {
         .disable_idle_timeout = DT_INST_PROP_OR(n, disable_idle_timeout, true),                    \
         .palm_reject = DT_INST_PROP_OR(n, palm_reject, true),                                      \
         .reati = DT_INST_PROP_OR(n, reati, true),                                                  \
+        .x_resolution = DT_INST_PROP_OR(n, x_resolution, 0),                                       \
+        .y_resolution = DT_INST_PROP_OR(n, y_resolution, 0),                                       \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, iqs5xx_init, NULL, &iqs5xx_data_##n, &iqs5xx_config_##n, POST_KERNEL, \
                           CONFIG_INPUT_INIT_PRIORITY, NULL);
