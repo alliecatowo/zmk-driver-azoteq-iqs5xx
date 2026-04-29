@@ -26,6 +26,12 @@
  * discontinuities at slow-drag start (chip sleeping between samples). */
 #define IQS5XX_IDLE_MODE_TIMEOUT 0x0586
 
+/* Output coordinate resolution (uint16 each). Datasheet §5.4. Chip's
+ * configured value is the OUTPUT scale across the trackpad — sets how
+ * many integer counts the chip reports per axis. */
+#define IQS5XX_X_RESOLUTION 0x066E
+#define IQS5XX_Y_RESOLUTION 0x0670
+
 #define IQS5XX_END_COMM_WINDOW 0xEEEE
 
 #define IQS5XX_SYSTEM_CONTROL_0 0x0431
@@ -173,6 +179,20 @@ struct iqs5xx_config {
 
     // Enable autonomous Re-ATI calibration (SYSTEM_CONFIG_0 bits 2 + 3).
     bool reati;
+
+    // Output coordinate resolution. 0 = leave chip at NVD default.
+    uint16_t x_resolution;
+    uint16_t y_resolution;
+};
+
+/* Diagnostic snapshot captured during setup_device, logged 3s later
+ * by delayed work after USB CDC has enumerated. */
+struct iqs5xx_diagnostic_state {
+    bool ready;
+    uint16_t pre_x_resolution;
+    uint16_t pre_y_resolution;
+    uint16_t post_x_resolution;
+    uint16_t post_y_resolution;
 };
 
 struct iqs5xx_data {
@@ -180,6 +200,8 @@ struct iqs5xx_data {
     struct gpio_callback rdy_cb;
     struct k_work work;
     struct k_work_delayable button_release_work;
+    struct k_work_delayable diagnostic_work;
+    struct iqs5xx_diagnostic_state diag;
     // TODO: Pack flags into a bitfield to save space.
     bool initialized;
     // Flag to indicate if the button was pressed in a previous cycle.

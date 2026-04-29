@@ -116,3 +116,21 @@ properties:
       while a finger is present — symptom is "long touches gradually lose
       sensitivity until release." Datasheet §3.7.2.
       Default true (matches Linux mainline + QMK upstream behavior).
+
+  x-resolution:
+    type: int
+    description: |
+      X-axis output coordinate resolution (register 0x066E, 16-bit).
+      Set to 0 to leave chip at NVD default (currently 1024).
+      IQS572 die max: 2048. Bumping increases per-finger-mm reporting
+      density. ALWAYS pair with matching y-resolution to preserve aspect
+      ratio.
+    default: 0
+
+  y-resolution:
+    type: int
+    description: |
+      Y-axis output coordinate resolution (register 0x0670, 16-bit).
+      Set to 0 to leave chip at NVD default (currently 1024).
+      IQS572 die max: 1792. Pair with x-resolution.
+    default: 0

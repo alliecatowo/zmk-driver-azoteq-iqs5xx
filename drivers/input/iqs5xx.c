@@ -423,6 +423,34 @@ static int iqs5xx_setup_device(const struct device *dev) {
         }
     }
 
+    /* Resolution write — datasheet §5.4. Pre-read for diagnostic, write,
+     * post-read to verify what stuck. Setting either to 0 leaves chip at
+     * NVD default. Holykeebs writes both atomically; we do separate writes
+     * within same comm window. */
+    {
+        struct iqs5xx_data *data = dev->data;
+        struct iqs5xx_diagnostic_state *d = &data->diag;
+        iqs5xx_read_reg16(dev, IQS5XX_X_RESOLUTION, &d->pre_x_resolution);
+        iqs5xx_read_reg16(dev, IQS5XX_Y_RESOLUTION, &d->pre_y_resolution);
+        if (config->x_resolution > 0) {
+            ret = iqs5xx_write_reg16(dev, IQS5XX_X_RESOLUTION, config->x_resolution);
+            if (ret < 0) {
+                LOG_ERR("Failed to write X_RESOLUTION: %d", ret);
+                return ret;
+            }
+        }
+        if (config->y_resolution > 0) {
+            ret = iqs5xx_write_reg16(dev, IQS5XX_Y_RESOLUTION, config->y_resolution);
+            if (ret < 0) {
+                LOG_ERR("Failed to write Y_RESOLUTION: %d", ret);
+                return ret;
+            }
+        }
+        iqs5xx_read_reg16(dev, IQS5XX_X_RESOLUTION, &d->post_x_resolution);
+        iqs5xx_read_reg16(dev, IQS5XX_Y_RESOLUTION, &d->post_y_resolution);
+        d->ready = true;
+    }
+
     uint8_t single_finger_gestures = 0;
     single_finger_gestures |= config->one_finger_tap ? IQS5XX_SINGLE_TAP : 0;
     single_finger_gestures |= config->press_and_hold ? IQS5XX_PRESS_AND_HOLD : 0;
@@ -487,6 +515,18 @@ static int iqs5xx_setup_device(const struct device *dev) {
     return 0;
 }
 
+/* Delayed diagnostic — fires 3s after init when USB CDC is up. */
+static void iqs5xx_diagnostic_work_handler(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct iqs5xx_data *data = CONTAINER_OF(dwork, struct iqs5xx_data, diagnostic_work);
+    struct iqs5xx_diagnostic_state *d = &data->diag;
+    if (!d->ready) return;
+    LOG_INF("=== IQS5xx resolution diagnostic ===");
+    LOG_INF("X_RES pre=%u  post=%u", d->pre_x_resolution, d->post_x_resolution);
+    LOG_INF("Y_RES pre=%u  post=%u", d->pre_y_resolution, d->post_y_resolution);
+    LOG_INF("=== END diagnostic ===");
+}
+
 static int iqs5xx_init(const struct device *dev) {
     const struct iqs5xx_config *config = dev->config;
     struct iqs5xx_data *data = dev->data;
@@ -500,6 +540,7 @@ static int iqs5xx_init(const struct device *dev) {
     data->dev = dev;
     k_work_init(&data->work, iqs5xx_work_handler);
     k_work_init_delayable(&data->button_release_work, iqs5xx_button_release_work_handler);
+    k_work_init_delayable(&data->diagnostic_work, iqs5xx_diagnostic_work_handler);
 
     // Configure reset GPIO if available.
     if (config->reset_gpio.port) {
@@ -568,6 +609,9 @@ static int iqs5xx_init(const struct device *dev) {
     data->initialized = true;
     LOG_INF("IQS5xx trackpad initialized");
 
+    /* Schedule diagnostic logging 3s out — USB CDC is up by then. */
+    k_work_schedule(&data->diagnostic_work, K_SECONDS(3));
+
     return 0;
 }
 
@@ -596,6 +640,8 @@ static int iqs5xx_init(const struct device *dev) {
         .disable_idle_timeout = DT_INST_PROP_OR(n, disable_idle_timeout, true),                    \
         .palm_reject = DT_INST_PROP_OR(n, palm_reject, true),                                      \
         .reati = DT_INST_PROP_OR(n, reati, true),                                                  \
+        .x_resolution = DT_INST_PROP_OR(n, x_resolution, 0),                                       \
+        .y_resolution = DT_INST_PROP_OR(n, y_resolution, 0),                                       \
     };                                                                                             \
     DEVICE_DT_INST_DEFINE(n, iqs5xx_init, NULL, &iqs5xx_data_##n, &iqs5xx_config_##n, POST_KERNEL, \
                           CONFIG_INPUT_INIT_PRIORITY, NULL);
